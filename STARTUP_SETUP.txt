@@ -1,0 +1,22 @@
+STARTUP SETUP FOR THIS BUILD
+
+Project folder (fixed):
+C:\Users\ravij\Downloads\OA\CodePilot_GeminiWebAPI_V13
+
+Batch launcher (fixed):
+C:\Users\ravij\Downloads\OA\CodePilot_GeminiWebAPI_V13\run_agent.bat
+
+Invisible Startup launcher:
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\invisible_agent.vbs
+
+IMPORTANT:
+1. Extract this ZIP so the project folder is exactly the path above.
+2. Keep .env and .venv in that project folder.
+3. Run install_startup.bat once. It copies invisible_agent.vbs to the Windows Startup folder.
+4. Windows will then launch the VBS invisibly at user logon.
+5. The VBS launches run_agent.bat with window style 0 (hidden).
+6. Chrome does not need to be open for CodePilot runtime.
+
+To remove startup:
+Delete:
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\invisible_agent.vbs
