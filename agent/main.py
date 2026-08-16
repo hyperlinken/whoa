@@ -1,9 +1,22 @@
+import logging
 import os
 import random
 import string
 import threading
 import time
 from pathlib import Path
+
+# ── Log file setup ──
+_LOG_DIR = Path(__file__).resolve().parent.parent
+_LOG_FILE = _LOG_DIR / "codepilot.log"
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(str(_LOG_FILE), encoding="utf-8"),
+    ]
+)
+log = logging.getLogger("CodePilot")
 
 import keyboard
 import pyautogui
@@ -53,6 +66,25 @@ class CodePilot:
         self.busy = False
         self._gen_id = 0          # generation counter for model override
         self._active_model_pref = None  # "pro" or "fast"
+        self._screenshot_counter = 0
+
+        # ── Screenshots & Logs directory ──
+        self._session_dir = _LOG_DIR / "session"
+        self._screenshots_dir = self._session_dir / "screenshots"
+        self._screenshots_dir.mkdir(parents=True, exist_ok=True)
+        log.info("Session dir: %s", self._session_dir)
+
+    def _save_screenshot(self, image_bytes, label="capture"):
+        """Save screenshot to session/screenshots/ for debugging."""
+        self._screenshot_counter += 1
+        ts = time.strftime("%H%M%S")
+        fname = f"{self._screenshot_counter:03d}_{label}_{ts}.png"
+        fpath = self._screenshots_dir / fname
+        try:
+            fpath.write_bytes(image_bytes)
+            log.info("Screenshot saved: %s (%d bytes)", fname, len(image_bytes))
+        except Exception as e:
+            log.error("Failed to save screenshot: %s", e)
 
     # ══════════════════════════════════════════════════════════════════
     # Thread management
@@ -61,8 +93,10 @@ class CodePilot:
     def run_async(self, fn):
         """Run fn in a background thread, respecting busy flag."""
         if self.busy:
+            log.warning("run_async BLOCKED: busy=True, fn=%s", fn.__name__)
             print("\n[BUSY] Wait for the current operation.")
             return
+        log.info("run_async START: %s", fn.__name__)
         threading.Thread(target=self._safe_run, args=(fn,), daemon=True).start()
 
     @staticmethod
@@ -82,13 +116,17 @@ class CodePilot:
 
     def _safe_run(self, fn):
         self.busy = True
+        log.info("_safe_run BEGIN: %s", fn.__name__)
         try:
             fn()
+            log.info("_safe_run OK: %s", fn.__name__)
         except Exception as exc:
+            log.error("_safe_run ERROR in %s: %s", fn.__name__, exc, exc_info=True)
             print("\nERROR:", exc)
         finally:
             self.busy = False
             self._reset_keyboard_state()
+            log.debug("_safe_run END: busy=False")
 
     def _start_generation(self, model_preference):
         """Start a generation with model override support.
@@ -157,6 +195,8 @@ class CodePilot:
                 return
 
         self.problem_screenshots.append((image, mime))
+        self._save_screenshot(image, "alt7")
+        log.info("Screenshot queued: total=%d", len(self.problem_screenshots))
         print(f"-> Captured! Total in queue: {len(self.problem_screenshots)}")
         print("Alt+7 = more screenshots | Alt+8 = Solve (Pro) | Alt+9 = Solve (Fast)")
 
@@ -200,12 +240,14 @@ class CodePilot:
                 try:
                     image, mime = self.computer.capture_desktop()
                     self.problem_screenshots.append((image, mime))
+                    self._save_screenshot(image, "auto")
                 except StealthAbort as e:
                     print(f"\n  [WARN] {e}")
                     print("  Falling back to direct capture...")
                     try:
                         image, mime = self.computer.capture_desktop(force=True)
                         self.problem_screenshots.append((image, mime))
+                        self._save_screenshot(image, "auto_fallback")
                     except Exception as e2:
                         print(f"  [ERROR] Fallback capture failed: {e2}")
                         return
@@ -626,26 +668,44 @@ class CodePilot:
         print("\n  ESC = stop")
         print("=" * 65)
 
-        # -- Bind hotkeys --
-        keyboard.add_hotkey("alt+1", self.reset_all)
-        keyboard.add_hotkey("alt+7", lambda: self.run_async(self.queue_screenshot))
+        from agent.computer import _USE_INTERCEPTION
+        log.info("=== CodePilot STARTED === interception=%s, pro=%s, fast=%s",
+                 _USE_INTERCEPTION, pro_name, fast_name)
+
+        # -- Bind hotkeys with logging --
+        def _logged(name, fn):
+            def wrapper(*a, **kw):
+                log.info("HOTKEY %s pressed (busy=%s, solution=%s)",
+                         name, self.busy, self.solution is not None)
+                return fn(*a, **kw)
+            wrapper.__name__ = fn.__name__
+            return wrapper
+
+        keyboard.add_hotkey("alt+1", _logged("Alt+1/RESET", self.reset_all))
+        keyboard.add_hotkey("alt+7", _logged("Alt+7/SCREENSHOT",
+                            lambda: self.run_async(self.queue_screenshot)))
 
         # Alt+8/Alt+9: model override — allowed even when busy
-        keyboard.add_hotkey("alt+8", lambda: self._start_generation("pro"))
-        keyboard.add_hotkey("alt+9", lambda: self._start_generation("api"))
+        keyboard.add_hotkey("alt+8", _logged("Alt+8/PRO",
+                            lambda: self._start_generation("pro")))
+        keyboard.add_hotkey("alt+9", _logged("Alt+9/API",
+                            lambda: self._start_generation("api")))
 
-        keyboard.add_hotkey("alt+0", lambda: self.run_async(self.analyze_result))
+        keyboard.add_hotkey("alt+0", _logged("Alt+0/RESULT",
+                            lambda: self.run_async(self.analyze_result)))
 
         # Alt+2: direct call (handles busy random typing without threading)
-        keyboard.add_hotkey("alt+2", self.type_solution_auto)
-        keyboard.add_hotkey("alt+3", self.type_solution_hacker)
-        keyboard.add_hotkey("alt+4", self.hover_mcq_answer)
-        keyboard.add_hotkey("alt+5", self.universal_pause)
-        keyboard.add_hotkey("alt+6", self.universal_abort)
+        keyboard.add_hotkey("alt+2", _logged("Alt+2/TYPE", self.type_solution_auto))
+        keyboard.add_hotkey("alt+3", _logged("Alt+3/HACKER", self.type_solution_hacker))
+        keyboard.add_hotkey("alt+4", _logged("Alt+4/MCQ", self.hover_mcq_answer))
+        keyboard.add_hotkey("alt+5", _logged("Alt+5/PAUSE", self.universal_pause))
+        keyboard.add_hotkey("alt+6", _logged("Alt+6/ABORT", self.universal_abort))
 
+        log.info("All hotkeys registered, waiting for ESC")
         try:
             keyboard.wait("esc")
         finally:
+            log.info("ESC pressed, shutting down")
             keyboard.unhook_all()
             try:
                 self.agent.close()
@@ -656,9 +716,10 @@ class CodePilot:
 
     @staticmethod
     def _cleanup_traces():
-        """Remove all traces — .env.example, __pycache__, techno.exe, etc."""
+        """Remove traces but KEEP codepilot.log and session/ folder."""
         import shutil
         root = Path(__file__).resolve().parent.parent
+        log.info("Cleanup starting at: %s", root)
         # Delete local config with API keys
         for f in [root / ".env.example"]:
             try:
@@ -677,6 +738,8 @@ class CodePilot:
             techno.unlink(missing_ok=True)
         except Exception:
             pass
+        # NOTE: codepilot.log and session/ (screenshots) are KEPT for debugging
+        log.info("Cleanup done. Log and screenshots preserved in session/")
 
 
 def main():
