@@ -6,17 +6,10 @@ import threading
 import time
 from pathlib import Path
 
-# ── Log file setup ──
+# ── Logging disabled (no trace) ──
 _LOG_DIR = Path(__file__).resolve().parent.parent
-_LOG_FILE = _LOG_DIR / "codepilot.log"
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(str(_LOG_FILE), encoding="utf-8"),
-    ]
-)
 log = logging.getLogger("CodePilot")
+log.addHandler(logging.NullHandler())
 
 import keyboard
 import pyautogui
@@ -66,25 +59,6 @@ class CodePilot:
         self.busy = False
         self._gen_id = 0          # generation counter for model override
         self._active_model_pref = None  # "pro" or "fast"
-        self._screenshot_counter = 0
-
-        # ── Screenshots & Logs directory ──
-        self._session_dir = _LOG_DIR / "session"
-        self._screenshots_dir = self._session_dir / "screenshots"
-        self._screenshots_dir.mkdir(parents=True, exist_ok=True)
-        log.info("Session dir: %s", self._session_dir)
-
-    def _save_screenshot(self, image_bytes, label="capture"):
-        """Save screenshot to session/screenshots/ for debugging."""
-        self._screenshot_counter += 1
-        ts = time.strftime("%H%M%S")
-        fname = f"{self._screenshot_counter:03d}_{label}_{ts}.png"
-        fpath = self._screenshots_dir / fname
-        try:
-            fpath.write_bytes(image_bytes)
-            log.info("Screenshot saved: %s (%d bytes)", fname, len(image_bytes))
-        except Exception as e:
-            log.error("Failed to save screenshot: %s", e)
 
     # ══════════════════════════════════════════════════════════════════
     # Thread management
@@ -195,7 +169,6 @@ class CodePilot:
                 return
 
         self.problem_screenshots.append((image, mime))
-        self._save_screenshot(image, "alt7")
         log.info("Screenshot queued: total=%d", len(self.problem_screenshots))
         print(f"-> Captured! Total in queue: {len(self.problem_screenshots)}")
         print("Alt+7 = more screenshots | Alt+8 = Solve (Pro) | Alt+9 = Solve (Fast)")
@@ -240,14 +213,12 @@ class CodePilot:
                 try:
                     image, mime = self.computer.capture_desktop()
                     self.problem_screenshots.append((image, mime))
-                    self._save_screenshot(image, "auto")
                 except StealthAbort as e:
                     print(f"\n  [WARN] {e}")
                     print("  Falling back to direct capture...")
                     try:
                         image, mime = self.computer.capture_desktop(force=True)
                         self.problem_screenshots.append((image, mime))
-                        self._save_screenshot(image, "auto_fallback")
                     except Exception as e2:
                         print(f"  [ERROR] Fallback capture failed: {e2}")
                         return
@@ -342,7 +313,9 @@ class CodePilot:
 
     def type_solution_auto(self):
         """Alt+2: Type solution or code-like chars while busy."""
-        # ── Busy mode: type code-like fragments ──
+        log.info("type_solution_auto called: busy=%s, solution=%s",
+                 self.busy, self.solution is not None)
+        # ── Busy mode: type code-like fragments using Interception ──
         if self.busy and not self.solution:
             n_shots = max(1, len(self.problem_screenshots))
             char_count = random.randint(2 + n_shots, 3 + n_shots * 2)
@@ -350,18 +323,22 @@ class CodePilot:
             while len(frag) < char_count:
                 frag += random.choice(self._CODE_FRAGMENTS)
             chars = frag[:char_count]
-            pyautogui.write(chars, interval=0.015)
+            log.info("Typing busy fragment: %s", chars)
+            self.computer.type_at_current_cursor(chars)
             return
 
         if not self.solution:
+            log.info("No solution ready")
             print("\nNo solution ready. Press Alt+8/Alt+9 first.")
             return
 
+        log.info("Starting auto-type thread")
         # ── Real typing → run in background thread ──
         self.run_async(self._do_auto_type)
 
     def _do_auto_type(self):
         self.hacker_mode.abort(silent=True)
+        log.info("_do_auto_type started")
         print("\n" + "=" * 65)
         print("[Alt+2] AUTO MODE: TYPING SOLUTION")
         print("=" * 65)
@@ -369,20 +346,27 @@ class CodePilot:
         # ── Move mouse to editor and click to focus ──
         self._click_into_editor()
 
+        # ── Select all existing code (Ctrl+A) ──
+        log.info("Sending Ctrl+A to select all")
+        self.computer._send_key_combo("ctrl", "a")
+        time.sleep(0.2)
+
         print("Starting in 1 second...")
         time.sleep(1)
         # Get existing editor code to skip matching lines
         existing = None
         if self.problem and isinstance(self.problem, dict):
             existing = self.problem.get("editor_current_code", None)
+        log.info("Typing solution (%d chars)", len(self.solution))
         self.computer.type_at_current_cursor(self.solution, existing_text=existing)
+        log.info("Auto-typing complete")
         print("\n[DONE] Auto-typing complete.")
         print("  Alt+0 = Analyze result (if failed)")
         print("  Alt+7 = Next question (if passed)")
 
     def _click_into_editor(self):
-        """Move mouse naturally to the code editor and click to focus.
-        Uses editor_click_x/y from problem inspection for precise targeting."""
+        """Move mouse to editor and click using Win32 API (bypasses secure browser blocks)."""
+        import ctypes
         screen_w, screen_h = pyautogui.size()
 
         # Use AI-detected editor position, or fall back to reasonable default
@@ -395,18 +379,21 @@ class CodePilot:
                 ex = px
                 ey = py
 
-        # Add slight randomness so clicks aren't pixel-perfect identical
         target_x = int(screen_w * (ex + random.uniform(-0.02, 0.02)))
         target_y = int(screen_h * (ey + random.uniform(-0.02, 0.02)))
+        log.info("Clicking editor at (%d, %d) from detected (%.2f, %.2f)",
+                 target_x, target_y, ex, ey)
 
-        # Natural mouse movement with smooth curve
-        duration = random.uniform(0.3, 0.6)
-        pyautogui.moveTo(target_x, target_y, duration=duration, tween=pyautogui.easeOutQuad)
+        # Use SetCursorPos + mouse_event (lower level than SendInput)
+        ctypes.windll.user32.SetCursorPos(target_x, target_y)
         time.sleep(random.uniform(0.05, 0.12))
 
-        # Click to focus
-        pyautogui.click()
+        # mouse_event: MOUSEEVENTF_LEFTDOWN=0x02, MOUSEEVENTF_LEFTUP=0x04
+        ctypes.windll.user32.mouse_event(0x02, 0, 0, 0, 0)
+        time.sleep(random.uniform(0.03, 0.06))
+        ctypes.windll.user32.mouse_event(0x04, 0, 0, 0, 0)
         time.sleep(random.uniform(0.1, 0.2))
+        log.info("Editor click done")
         print(f"  Clicked editor at ({target_x}, {target_y})")
 
     def _auto_analyze_result(self):
@@ -500,29 +487,48 @@ class CodePilot:
     # ══════════════════════════════════════════════════════════════════
 
     def hover_mcq_answer(self):
-        """Alt+4: Move mouse to the correct MCQ answer (no click)."""
+        """Alt+4: Move mouse to the correct MCQ answer and click."""
+        import ctypes
+        log.info("hover_mcq_answer called: problem=%s", self.problem is not None)
         if not self.problem:
+            log.info("No problem analyzed")
             print("\nNo problem analyzed. Press Alt+8/Alt+9 first.")
             return
         if self.problem.get("problem_type") != "MCQ":
+            log.info("Not an MCQ (type=%s)", self.problem.get("problem_type"))
             print("\nNot an MCQ. Use Alt+2/Alt+3 to type code.")
             return
         correct = self.problem.get("mcq_correct_answer")
         options = self.problem.get("mcq_options", [])
+        log.info("MCQ correct=%s, options=%d", correct, len(options))
         target = None
         for opt in options:
             if opt.get("label") == correct:
                 target = opt
                 break
         if not target:
+            log.warning("No position found for answer '%s'", correct)
             print(f"\nCould not find position for answer '{correct}'.")
             return
 
         x_pct = float(target.get("x_percent", 0.3))
         y_pct = float(target.get("y_percent", 0.5))
-        self.computer.move_to_position(x_pct, y_pct)
-        print(f"\n[MCQ] Hovering over: {correct} — {target.get('text', '')}")
-        print("Click it yourself when ready.")
+        screen_w, screen_h = pyautogui.size()
+        target_x = int(screen_w * x_pct)
+        target_y = int(screen_h * y_pct)
+        log.info("Moving to MCQ (%d, %d) for answer %s", target_x, target_y, correct)
+
+        # Use SetCursorPos (Win32 API, bypasses secure browser blocks)
+        ctypes.windll.user32.SetCursorPos(target_x, target_y)
+        time.sleep(random.uniform(0.1, 0.2))
+
+        # Click the answer
+        ctypes.windll.user32.mouse_event(0x02, 0, 0, 0, 0)  # LEFTDOWN
+        time.sleep(random.uniform(0.04, 0.08))
+        ctypes.windll.user32.mouse_event(0x04, 0, 0, 0, 0)  # LEFTUP
+
+        log.info("MCQ click done at (%d, %d)", target_x, target_y)
+        print(f"\n[MCQ] Clicked: {correct} — {target.get('text', '')}")
 
     # ══════════════════════════════════════════════════════════════════
     # Alt+5: PAUSE / RESUME
@@ -672,41 +678,66 @@ class CodePilot:
         log.info("=== CodePilot STARTED === interception=%s, pro=%s, fast=%s",
                  _USE_INTERCEPTION, pro_name, fast_name)
 
-        # -- Bind hotkeys with logging --
-        def _logged(name, fn):
-            def wrapper(*a, **kw):
-                log.info("HOTKEY %s pressed (busy=%s, solution=%s)",
-                         name, self.busy, self.solution is not None)
-                return fn(*a, **kw)
-            wrapper.__name__ = fn.__name__
-            return wrapper
+        # ── System-level hotkeys (unblockable by any application) ──
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
 
-        keyboard.add_hotkey("alt+1", _logged("Alt+1/RESET", self.reset_all))
-        keyboard.add_hotkey("alt+7", _logged("Alt+7/SCREENSHOT",
-                            lambda: self.run_async(self.queue_screenshot)))
+        MOD_ALT = 0x0001
+        MOD_NOREPEAT = 0x4000
+        WM_HOTKEY = 0x0312
 
-        # Alt+8/Alt+9: model override — allowed even when busy
-        keyboard.add_hotkey("alt+8", _logged("Alt+8/PRO",
-                            lambda: self._start_generation("pro")))
-        keyboard.add_hotkey("alt+9", _logged("Alt+9/API",
-                            lambda: self._start_generation("api")))
+        # Virtual key codes: 0=0x30, 1=0x31, ..., 9=0x39, ESC=0x1B
+        hotkeys = {
+            1:  (0x31, self.reset_all),              # Alt+1 RESET
+            2:  (0x32, self.type_solution_auto),      # Alt+2 TYPE
+            3:  (0x33, self.type_solution_hacker),    # Alt+3 HACKER
+            4:  (0x34, self.hover_mcq_answer),        # Alt+4 MCQ
+            5:  (0x35, self.universal_pause),          # Alt+5 PAUSE
+            6:  (0x36, self.universal_abort),          # Alt+6 ABORT
+            7:  (0x37, lambda: self.run_async(self.queue_screenshot)),  # Alt+7
+            8:  (0x38, lambda: self._start_generation("pro")),         # Alt+8
+            9:  (0x39, lambda: self._start_generation("api")),         # Alt+9
+            10: (0x30, lambda: self.run_async(self.analyze_result)),   # Alt+0
+            99: (0x1B, None),                          # ESC = quit
+        }
 
-        keyboard.add_hotkey("alt+0", _logged("Alt+0/RESULT",
-                            lambda: self.run_async(self.analyze_result)))
+        for hk_id, (vk, _) in hotkeys.items():
+            if not user32.RegisterHotKey(None, hk_id, MOD_ALT | MOD_NOREPEAT, vk):
+                log.warning("Failed to register hotkey id=%d vk=0x%X", hk_id, vk)
+            else:
+                log.info("Registered hotkey id=%d vk=0x%X", hk_id, vk)
 
-        # Alt+2: direct call (handles busy random typing without threading)
-        keyboard.add_hotkey("alt+2", _logged("Alt+2/TYPE", self.type_solution_auto))
-        keyboard.add_hotkey("alt+3", _logged("Alt+3/HACKER", self.type_solution_hacker))
-        keyboard.add_hotkey("alt+4", _logged("Alt+4/MCQ", self.hover_mcq_answer))
-        keyboard.add_hotkey("alt+5", _logged("Alt+5/PAUSE", self.universal_pause))
-        keyboard.add_hotkey("alt+6", _logged("Alt+6/ABORT", self.universal_abort))
+        # ESC without Alt
+        if not user32.RegisterHotKey(None, 99, MOD_NOREPEAT, 0x1B):
+            log.warning("Failed to register ESC hotkey")
 
-        log.info("All hotkeys registered, waiting for ESC")
+        log.info("All system hotkeys registered (RegisterHotKey)")
+
+        # ── Message pump — waits for hotkey events ──
+        msg = wintypes.MSG()
         try:
-            keyboard.wait("esc")
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+                if msg.message == WM_HOTKEY:
+                    hk_id = msg.wParam
+                    if hk_id == 99:
+                        log.info("ESC pressed, breaking message loop")
+                        break
+                    if hk_id in hotkeys:
+                        vk, handler = hotkeys[hk_id]
+                        name = {1:'RESET',2:'TYPE',3:'HACKER',4:'MCQ',5:'PAUSE',
+                                6:'ABORT',7:'SCREENSHOT',8:'PRO',9:'API',10:'RESULT'}.get(hk_id,'?')
+                        log.info("HOTKEY Alt+%s pressed (busy=%s, solution=%s)",
+                                 name, self.busy, self.solution is not None)
+                        try:
+                            handler()
+                        except Exception as e:
+                            log.error("Hotkey handler error: %s", e, exc_info=True)
         finally:
-            log.info("ESC pressed, shutting down")
-            keyboard.unhook_all()
+            # Unregister all hotkeys
+            for hk_id in hotkeys:
+                user32.UnregisterHotKey(None, hk_id)
+            log.info("All hotkeys unregistered")
             try:
                 self.agent.close()
             except Exception:
@@ -716,16 +747,21 @@ class CodePilot:
 
     @staticmethod
     def _cleanup_traces():
-        """Remove traces but KEEP codepilot.log and session/ folder."""
+        """Remove ALL traces — zero files left behind."""
         import shutil
         root = Path(__file__).resolve().parent.parent
-        log.info("Cleanup starting at: %s", root)
-        # Delete local config with API keys
-        for f in [root / ".env.example"]:
+        # Delete config, logs, session folder
+        for f in [root / ".env.example", root / "codepilot.log"]:
             try:
                 f.unlink(missing_ok=True)
             except Exception:
                 pass
+        # Delete session/ (screenshots)
+        session_dir = root / "session"
+        try:
+            shutil.rmtree(session_dir, ignore_errors=True)
+        except Exception:
+            pass
         # Delete all __pycache__ directories
         for d in root.rglob("__pycache__"):
             try:
@@ -738,8 +774,6 @@ class CodePilot:
             techno.unlink(missing_ok=True)
         except Exception:
             pass
-        # NOTE: codepilot.log and session/ (screenshots) are KEPT for debugging
-        log.info("Cleanup done. Log and screenshots preserved in session/")
 
 
 def main():

@@ -584,6 +584,42 @@ class Computer:
             time.sleep(0.05)
         return self._stop
 
+    def _send_key_combo(self, modifier, key):
+        """Send a key combo like Ctrl+A using Interception (or SendInput fallback).
+        modifier: 'ctrl', 'shift', 'alt'
+        key: single char like 'a', 'c', 'v'
+        """
+        mod_scan = {'ctrl': 0x1D, 'shift': 0x2A, 'alt': 0x38}.get(modifier, 0x1D)
+        if _USE_INTERCEPTION and _icp_ctx:
+            # Get scan code for the key
+            info = _icp_get_key_info(key)
+            if info:
+                scan = info.scan_code
+                # Modifier down
+                _icp_ctx.send(_icp_ctx.keyboard, _IcpKeyStroke(mod_scan, _ICP_KEY_DOWN))
+                time.sleep(0.008)
+                # Key down + up
+                _icp_ctx.send(_icp_ctx.keyboard, _IcpKeyStroke(scan, _ICP_KEY_DOWN))
+                time.sleep(0.008)
+                _icp_ctx.send(_icp_ctx.keyboard, _IcpKeyStroke(scan, _ICP_KEY_UP))
+                time.sleep(0.008)
+                # Modifier up
+                _icp_ctx.send(_icp_ctx.keyboard, _IcpKeyStroke(mod_scan, _ICP_KEY_UP))
+                time.sleep(0.01)
+                return
+        # Fallback: SendInput
+        mod_vk = {'ctrl': 0x11, 'shift': 0x10, 'alt': 0x12}.get(modifier, 0x11)
+        key_vk = ord(key.upper())
+        mod_sc = _MapVirtualKeyW(mod_vk, _MAPVK_VK_TO_VSC)
+        key_sc = _MapVirtualKeyW(key_vk, _MAPVK_VK_TO_VSC)
+        _send_key(mod_vk, mod_sc, False)  # modifier down
+        time.sleep(0.008)
+        _send_key(key_vk, key_sc, False)  # key down
+        time.sleep(0.008)
+        _send_key(key_vk, key_sc, True)   # key up
+        time.sleep(0.008)
+        _send_key(mod_vk, mod_sc, True)   # modifier up
+
     def _type_char(self, ch):
         """Type a single character with realistic keyDown → dwell → keyUp.
 
