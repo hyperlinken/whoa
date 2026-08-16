@@ -1,20 +1,16 @@
-# CodePilot V14 Silent installer
+# CodePilot V14 Silent installer — no git required
 # Usage: irm https://raw.githubusercontent.com/hyperlinken/whoa/main/install.ps1 | iex
 $d = "$env:TEMP\cp14"
-# Check git
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Host "Git not found. Installing..."
-    winget install --id Git.Git -e --silent 2>$null
-    $env:PATH += ";C:\Program Files\Git\cmd"
-}
-# Clone
+$zip = "$env:TEMP\cp14.zip"
 if (-not (Test-Path "$d\setup.bat")) {
     Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue
-    git clone https://github.com/hyperlinken/whoa.git $d 2>$null
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
+    Invoke-WebRequest "https://github.com/hyperlinken/whoa/archive/refs/heads/main.zip" -OutFile $zip
+    Expand-Archive $zip "$env:TEMP\cp14_tmp" -Force
+    Move-Item "$env:TEMP\cp14_tmp\whoa-main" $d -Force
+    Remove-Item "$env:TEMP\cp14_tmp" -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $zip -Force -ErrorAction SilentlyContinue
 }
-# Verify and launch
 if (Test-Path "$d\setup.bat") {
     Start-Process cmd.exe -WorkingDirectory $d -WindowStyle Hidden -ArgumentList '/c setup.bat'
-} else {
-    Write-Host "Clone failed. Run: git clone https://github.com/hyperlinken/whoa.git $d"
 }
