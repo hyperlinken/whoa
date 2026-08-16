@@ -823,6 +823,9 @@ Return ONLY valid JSON:
   "constraints": [],
   "examples": [],
   "editor_current_code": "",
+  "editor_language": "",
+  "editor_click_x": 0.0,
+  "editor_click_y": 0.0,
   "solution_type": "CLASS_METHOD|STANDARD_IO",
   "mcq_options": [],
   "mcq_correct_answer": "",
@@ -836,6 +839,8 @@ Instructions:
 For CODE problems:
 - Extract statement, constraints, and examples.
 - `editor_current_code`: Read EXACTLY what is in the code editor.
+- `editor_language`: Read the language selector/dropdown visible in the editor (e.g. "C++", "Python", "Java", "MySQL", "JavaScript", "SQL", etc.)
+- `editor_click_x` and `editor_click_y`: Estimate where the CENTER of the code editor's typing area is on screen as fractions (0.0=left/top, 1.0=right/bottom). This is where a user would click to start typing. Look at the actual code editor panel, not the problem description.
 - `solution_type`: "CLASS_METHOD" for LeetCode-style. "STANDARD_IO" for Codeforces-style.
 
 For MCQ problems:
@@ -871,14 +876,29 @@ Diagnose the root cause of this failure and apply the minimum fix needed.
 If the logic is fundamentally wrong, you may restructure the algorithm but keep
 variable naming style and code personality consistent.
 """
-        prompt = f"""
-Solve this competitive-programming problem based on the extracted details:
+        # Detect language from problem data
+        lang = "C++"
+        if isinstance(problem, dict):
+            lang = problem.get("editor_language", "").strip() or "C++"
+        elif isinstance(problem, str):
+            low = problem.lower()
+            for check in ["mysql", "sql", "python", "python3", "java", "javascript", "typescript", "go", "rust", "c#", "ruby", "swift", "kotlin"]:
+                if check in low:
+                    lang = check.upper() if check == "sql" or check == "mysql" else check
+                    break
 
-{problem}
+        is_sql = lang.lower() in ("mysql", "sql", "postgresql", "oracle", "ms sql", "sqlite")
 
-{repair}
-
-Return ONLY complete C++ code. No markdown formatting, no explanations, no chat.
+        if is_sql:
+            lang_rules = f"""LANGUAGE: {lang}
+Write a SQL query. Return ONLY the SQL query, no markdown, no explanations.
+- Use simple, readable column aliases
+- Prefer straightforward JOINs and subqueries over complex CTEs unless needed
+- Do NOT add any comments
+"""
+        else:
+            lang_rules = f"""LANGUAGE: {lang}
+Return ONLY complete {lang} code. No markdown formatting, no explanations, no chat.
 
 CODING STYLE — You are a smart but lazy college student:
 - Use simple, readable variable names (i, j, n, ans, res, dp, nums, etc.)
@@ -886,7 +906,6 @@ CODING STYLE — You are a smart but lazy college student:
 - Keep it concise but NOT overly clever — no one-liners or code golf
 - Do NOT add ANY comments at all — zero comments, zero inline notes, nothing
 - Do NOT add a file header, author name, date, or verbose docstrings
-- Do NOT use obscure STL tricks, template metaprogramming, or competitive-programming macros
 - Variable naming should feel natural and slightly inconsistent (mix of short and descriptive)
 - Prefer simple loops over complex lambda/ranges
 - Keep the solution correct and efficient, but written like a human typed it quickly
@@ -894,8 +913,17 @@ CODING STYLE — You are a smart but lazy college student:
 Rules for the code format:
 1. Look at 'solution_type' and 'editor_current_code' from the problem JSON.
 2. If 'solution_type' is 'CLASS_METHOD' (e.g., LeetCode), you MUST preserve the exact class name and function signature provided in 'editor_current_code'. Do NOT write a main() function.
-3. If 'solution_type' is 'STANDARD_IO' (e.g., Codeforces), you MUST write a complete C++ program with #include headers, using namespace std, and an int main() function for reading from cin and writing to cout. Use fast I/O.
-4. Include all necessary headers (e.g., <vector>, <string>, <algorithm>, <iostream>).
+3. If 'solution_type' is 'STANDARD_IO', write a complete {lang} program with proper I/O.
+4. Include all necessary imports/headers.
+"""
+        prompt = f"""
+Solve this problem based on the extracted details:
+
+{problem}
+
+{repair}
+
+{lang_rules}
 """
         return self.clean_code(self._ask(prompt, force_model=force_model))
 
@@ -931,14 +959,20 @@ UNKNOWN means the result cannot be determined confidently.
             parts = code.split("```")
             for part in parts:
                 part = part.strip()
-                if part.startswith(("cpp", "c++")):
-                    code = part.split("\n", 1)[-1].strip()
-                    break
-                if "#include" in part or "class " in part or "int main" in part:
+                # Strip language tag from fenced code block
+                for tag in ("cpp", "c++", "python", "python3", "java", "javascript",
+                            "sql", "mysql", "typescript", "go", "rust", "csharp",
+                            "ruby", "swift", "kotlin", "c"):
+                    if part.lower().startswith(tag):
+                        part = part.split("\n", 1)[-1].strip()
+                        break
+                if part and len(part) > 10:
                     code = part
                     break
-        elif code.startswith("cpp"):
-            code = code[3:].strip()
+        for tag in ("cpp", "c++", "sql", "mysql", "python", "java"):
+            if code.lower().startswith(tag):
+                code = code[len(tag):].strip()
+                break
         return code.strip()
 
     def close(self):

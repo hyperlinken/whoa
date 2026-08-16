@@ -323,6 +323,10 @@ class CodePilot:
         print("\n" + "=" * 65)
         print("[Alt+2] AUTO MODE: TYPING SOLUTION")
         print("=" * 65)
+
+        # ── Move mouse to editor and click to focus ──
+        self._click_into_editor()
+
         print("Starting in 1 second...")
         time.sleep(1)
         # Get existing editor code to skip matching lines
@@ -333,6 +337,35 @@ class CodePilot:
         print("\n[DONE] Auto-typing complete.")
         print("  Alt+0 = Analyze result (if failed)")
         print("  Alt+7 = Next question (if passed)")
+
+    def _click_into_editor(self):
+        """Move mouse naturally to the code editor and click to focus.
+        Uses editor_click_x/y from problem inspection for precise targeting."""
+        screen_w, screen_h = pyautogui.size()
+
+        # Use AI-detected editor position, or fall back to reasonable default
+        ex = 0.70
+        ey = 0.40
+        if self.problem and isinstance(self.problem, dict):
+            px = self.problem.get("editor_click_x", 0)
+            py = self.problem.get("editor_click_y", 0)
+            if px > 0.1 and py > 0.1:
+                ex = px
+                ey = py
+
+        # Add slight randomness so clicks aren't pixel-perfect identical
+        target_x = int(screen_w * (ex + random.uniform(-0.02, 0.02)))
+        target_y = int(screen_h * (ey + random.uniform(-0.02, 0.02)))
+
+        # Natural mouse movement with smooth curve
+        duration = random.uniform(0.3, 0.6)
+        pyautogui.moveTo(target_x, target_y, duration=duration, tween=pyautogui.easeOutQuad)
+        time.sleep(random.uniform(0.05, 0.12))
+
+        # Click to focus
+        pyautogui.click()
+        time.sleep(random.uniform(0.1, 0.2))
+        print(f"  Clicked editor at ({target_x}, {target_y})")
 
     def _auto_analyze_result(self):
         """Automatically capture screen and analyze result after typing."""
