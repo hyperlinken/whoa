@@ -1,0 +1,8 @@
+python-dotenv>=1.1.1
+pyautogui>=0.9.54
+Pillow>=11.0.0
+keyboard>=0.13.5
+curl_cffi>=0.15.0
+google-genai>=2.0.0
+gemini_webapi>=2.0.0
+interception-python>=0.3.2
