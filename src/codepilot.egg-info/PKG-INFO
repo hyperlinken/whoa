@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: codepilot
+Version: 14.0.0+refactor
+Summary: Layered Windows desktop AI coding assistant
+Requires-Python: >=3.11
+Requires-Dist: python-dotenv
+Requires-Dist: keyboard
+Requires-Dist: pyautogui
+Requires-Dist: Pillow
+Requires-Dist: google-genai
+Requires-Dist: gemini-webapi
+Requires-Dist: curl-cffi
+Requires-Dist: interception-python

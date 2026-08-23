@@ -1,0 +1,8 @@
+python-dotenv
+keyboard
+pyautogui
+Pillow
+google-genai
+gemini-webapi
+curl-cffi
+interception-python

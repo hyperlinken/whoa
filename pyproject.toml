@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codepilot"
+version = "14.0.0+refactor"
+description = "Layered Windows desktop AI coding assistant"
+requires-python = ">=3.11"
+dependencies = [
+  "python-dotenv",
+  "keyboard",
+  "pyautogui",
+  "Pillow",
+  "google-genai",
+  "gemini-webapi",
+  "curl-cffi",
+  "interception-python",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
