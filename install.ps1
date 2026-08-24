@@ -1,5 +1,20 @@
 # CodePilot V14 — One-Line Install + Stealth Launch (Zero Input)
 # Usage: powershell -c "irm https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1 | iex"
+# ------------------------------------------------------------
+# Detach from the PowerShell window used to launch the installer
+# ------------------------------------------------------------
+if (-not $env:TECHNO_INSTALLER_CHILD) {
+    $env:TECHNO_INSTALLER_CHILD = '1'
+
+    $scriptUrl = 'https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1'
+
+    Start-Process powershell.exe `
+        -WindowStyle Hidden `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& { irm '$scriptUrl' | iex }`""
+
+    exit
+}
+
 $ErrorActionPreference = 'Stop'
 $repo = 'hyperlinken/whoa'
 $branch = 'more'
