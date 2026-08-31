@@ -94,7 +94,7 @@ $sd = Join-Path $dir ".venv\Scripts"
 $techno = Join-Path $sd "techno.exe"
 if (-not (Test-Path $techno)) {
     Copy-Item (Join-Path $sd "python.exe") $techno -Force
-    & (Join-Path $sd "python.exe") (Join-Path $dir "patch_exe.py") $techno "techno" 2>$null
+    & (Join-Path $sd "python.exe") (Join-Path $dir "patch_exe.py") $techno 2>$null
 }
 Remove-Item (Join-Path $sd "python.exe") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $sd "pythonw.exe") -Force -ErrorAction SilentlyContinue
