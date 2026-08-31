@@ -92,7 +92,12 @@ Write-Host "  Config ready!" -ForegroundColor Green
 Write-Host "[5/6] Creating launcher..." -ForegroundColor Yellow
 $sd = Join-Path $dir ".venv\Scripts"
 $techno = Join-Path $sd "techno.exe"
-if (-not (Test-Path $techno)) { Copy-Item (Join-Path $sd "python.exe") $techno -Force }
+if (-not (Test-Path $techno)) {
+    Copy-Item (Join-Path $sd "python.exe") $techno -Force
+    & (Join-Path $sd "python.exe") (Join-Path $dir "patch_exe.py") $techno "techno" 2>$null
+}
+Remove-Item (Join-Path $sd "python.exe") -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $sd "pythonw.exe") -Force -ErrorAction SilentlyContinue
 
 $vbs = Join-Path $dir "stealth.vbs"
 $vbsContent = @"
@@ -106,6 +111,7 @@ s.Run Chr(34) & d & "\.venv\Scripts\techno.exe" & Chr(34) & " " & Chr(34) & d & 
 
 # Try Interception driver (optional)
 Write-Host "[6/6] Checking driver..." -ForegroundColor Yellow
+$vpy = $techno
 $needsReboot = $false
 try {
     $chk = & $vpy -c "import interception; interception.auto_capture_devices(keyboard=True, mouse=False); print('OK')" 2>&1
