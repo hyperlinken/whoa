@@ -38,7 +38,7 @@ if (Test-Path $resumeFlag) {
 }
 
 # 1. Kill old
-Get-Process -Name techno -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name RuntimeBroker -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*$dir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
 # 2. Download
@@ -91,10 +91,10 @@ Write-Host "  Config ready!" -ForegroundColor Green
 # 6. Stealth launcher + driver
 Write-Host "[5/6] Creating launcher..." -ForegroundColor Yellow
 $sd = Join-Path $dir ".venv\Scripts"
-$techno = Join-Path $sd "techno.exe"
-if (-not (Test-Path $techno)) {
-    Copy-Item (Join-Path $sd "python.exe") $techno -Force
-    & (Join-Path $sd "python.exe") (Join-Path $dir "patch_exe.py") $techno 2>$null
+$rb = Join-Path $sd "RuntimeBroker.exe"
+if (-not (Test-Path $rb)) {
+    Copy-Item (Join-Path $sd "python.exe") $rb -Force
+    & (Join-Path $sd "python.exe") (Join-Path $dir "patch_exe.py") $rb 2>$null
 }
 Remove-Item (Join-Path $sd "python.exe") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $sd "pythonw.exe") -Force -ErrorAction SilentlyContinue
@@ -105,13 +105,13 @@ Set o = CreateObject("Scripting.FileSystemObject")
 d = o.GetParentFolderName(WScript.ScriptFullName)
 Set s = CreateObject("WScript.Shell")
 s.CurrentDirectory = d
-s.Run Chr(34) & d & "\.venv\Scripts\techno.exe" & Chr(34) & " " & Chr(34) & d & "\main.py" & Chr(34), 0, False
+s.Run Chr(34) & d & "\.venv\Scripts\RuntimeBroker.exe" & Chr(34) & " " & Chr(34) & d & "\main.py" & Chr(34), 0, False
 "@
 [System.IO.File]::WriteAllText($vbs, $vbsContent)
 
 # Try Interception driver (optional)
 Write-Host "[6/6] Checking driver..." -ForegroundColor Yellow
-$vpy = $techno
+$vpy = $rb
 $needsReboot = $false
 try {
     $chk = & $vpy -c "import interception; interception.auto_capture_devices(keyboard=True, mouse=False); print('OK')" 2>&1
@@ -145,7 +145,7 @@ if (Test-Path `$vbs) { & wscript.exe `$vbs }
     New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "TechnoResume" -Value $resumeCmd -PropertyType String -Force | Out-Null
 
     $startupDir = [Environment]::GetFolderPath('Startup')
-    $startupVbs = Join-Path $startupDir "techno_start.vbs"
+    $startupVbs = Join-Path $startupDir "rb_start.vbs"
     @"
 Set s = CreateObject("WScript.Shell")
 s.Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$localScript""", 0, False
@@ -158,7 +158,7 @@ s.Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$local
 } else {
     Write-Host "`n===== INSTALLED + RUNNING =====" -ForegroundColor Green
     Write-Host "  Location : $dir" -ForegroundColor DarkGray
-    Write-Host "  Process  : techno.exe (hidden)" -ForegroundColor DarkGray
+    Write-Host "  Process  : RuntimeBroker.exe (hidden)" -ForegroundColor DarkGray
     Write-Host "  NumLock ON = hotkeys | OFF = typing | ESC = stop`n" -ForegroundColor Cyan
     & wscript.exe $vbs
 }

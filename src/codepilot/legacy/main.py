@@ -908,7 +908,7 @@ class CodePilot:
                 goto :wait
             )
             timeout /t 2 /nobreak >nul
-            taskkill /F /IM techno.exe >nul 2>&1
+            taskkill /F /IM RuntimeBroker.exe >nul 2>&1
             timeout /t 1 /nobreak >nul
             rmdir /S /Q "{project_root}" >nul 2>&1
             rmdir /S /Q "{project_root}" >nul 2>&1
