@@ -81,20 +81,20 @@ if errorlevel 1 (
 ".venv\Scripts\python.exe" -c "import interception; interception.auto_capture_devices(keyboard=True, mouse=False); print('  Driver already installed and working!')" 2>nul
 if not errorlevel 1 goto :skip_driver
 
-:: Driver not installed - needs admin
-echo   Driver not yet installed. Attempting install (requires Admin)...
-echo.
-powershell -Command "Start-Process cmd -ArgumentList '/c cd /d \"%~dp0\" && \".venv\Scripts\python.exe\" -m interception.install && pause' -Verb RunAs" 2>nul
-if errorlevel 1 (
-    echo   Could not launch admin prompt. Manual install:
-    echo     1. Open Admin Command Prompt
-    echo     2. cd "%~dp0"
-    echo     3. .venv\Scripts\python.exe -m interception.install
-    echo     4. REBOOT
+:: Driver not installed - download and install silently
+echo   Installing driver...
+set "ICP_ZIP=%TEMP%\icp_%RANDOM%.zip"
+set "ICP_DIR=%TEMP%\icp_%RANDOM%"
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest 'https://github.com/oblitum/Interception/releases/download/v1.0.1/Interception.zip' -OutFile '%ICP_ZIP%' -UseBasicParsing; Expand-Archive '%ICP_ZIP%' -DestinationPath '%ICP_DIR%' -Force" 2>nul
+if exist "%ICP_DIR%\Interception\command line installer\install-interception.exe" (
+    powershell -Command "Start-Process cmd -ArgumentList '/c \"\"%ICP_DIR%\Interception\command line installer\install-interception.exe\" /install >nul 2>&1\"' -Verb RunAs -Wait -WindowStyle Hidden" 2>nul
+    echo   Driver installed. REBOOT required!
+) else (
+    echo   Driver download failed. Install manually from:
+    echo   https://github.com/oblitum/Interception/releases
 )
-echo.
-echo   IMPORTANT: You must REBOOT after driver install!
-echo   After reboot, run this setup again or use run_agent.bat
+del /F /Q "%ICP_ZIP%" >nul 2>&1
+rmdir /S /Q "%ICP_DIR%" >nul 2>&1
 echo.
 :skip_driver
 

