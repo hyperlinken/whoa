@@ -6,3 +6,4 @@ curl_cffi>=0.15.0
 google-genai>=2.0.0
 gemini_webapi>=2.0.0
 interception-python>=0.3.2
+pywin32>=306
