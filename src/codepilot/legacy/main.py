@@ -798,37 +798,21 @@ class CodePilot:
 
             vk = lParam[0].vkCode
 
-            # ESC always triggers quit (regardless of NumLock or busy state)
+            # ESC always triggers quit (regardless of NumLock)
             if vk == 0x1B and wParam == WM_KEYDOWN:
                 user32.PostThreadMessageW(thread_id, WM_HOTKEY, 99, 0)
-                return 1  # suppress ESC so it doesn't affect the target app
-
-            # NumLock key itself: let it pass through so toggle state changes.
-            if vk == VK_NUMLOCK:
-                # Clear held set when NumLock toggles — prevents stuck keys
-                if wParam == WM_KEYDOWN:
-                    _held.clear()
                 return user32.CallNextHookEx(
                     _hook_handle[0], nCode, wParam, raw_lp)
 
-            numlock_on = user32.GetKeyState(VK_NUMLOCK) & 1
-
-            # When NumLock is ON and app is busy/typing, suppress ALL keys
-            # to prevent user's physical keypresses from typing along
-            if numlock_on and self.busy:
-                # Still process hotkeys (5=pause, 6=abort)
-                if vk in hotkeys:
-                    if wParam == WM_KEYDOWN:
-                        if vk not in _held:
-                            _held.add(vk)
-                            user32.PostThreadMessageW(
-                                thread_id, WM_HOTKEY, hotkeys[vk][0], 0)
-                    elif wParam == WM_KEYUP:
-                        _held.discard(vk)
-                return 1  # suppress ALL keys while busy
+            # NumLock key itself: let it pass through so toggle state changes.
+            # Hotkey activation is determined by GetKeyState(VK_NUMLOCK) check below.
+            if vk == VK_NUMLOCK:
+                return user32.CallNextHookEx(
+                    _hook_handle[0], nCode, wParam, raw_lp)
 
             # Number keys: only intercept when NumLock is toggled ON
             if vk in hotkeys:
+                numlock_on = user32.GetKeyState(VK_NUMLOCK) & 1
                 if numlock_on:
                     if wParam == WM_KEYDOWN:
                         if vk not in _held:
@@ -840,9 +824,6 @@ class CodePilot:
                     elif wParam == WM_KEYUP:
                         _held.discard(vk)
                         return 1  # suppress key-up too
-                else:
-                    # NumLock OFF — clear any stale held state
-                    _held.discard(vk)
 
             return user32.CallNextHookEx(
                 _hook_handle[0], nCode, wParam, raw_lp)
