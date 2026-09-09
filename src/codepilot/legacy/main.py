@@ -565,6 +565,31 @@ class CodePilot:
         if not self.solution:
             print("\nNo solution ready. Press 8/9 first.")
             return
+
+        # If patches are pending, use patch replacement code only
+        if self._pending_changes:
+            changes = self._pending_changes
+            if len(changes) == 1:
+                # Single patch — arm with just the replacement
+                ch = changes[0]
+                s, e = ch.get('start_line', '?'), ch.get('end_line', '?')
+                print(f"\n[3] HACKER MODE: PATCH K {s}-{e}")
+                self.hacker_mode.source_text = ch.get('replacement', '')
+            else:
+                # Multiple patches — arm with first one, show queue
+                ch = changes[0]
+                s, e = ch.get('start_line', '?'), ch.get('end_line', '?')
+                print(f"\n[3] HACKER MODE: PATCH K {s}-{e}  ({len(changes)} patches)")
+                self.hacker_mode.source_text = ch.get('replacement', '')
+                # Shift to next patch for next press of 3
+                self._pending_changes = changes[1:]
+                if self._pending_changes:
+                    nxt = self._pending_changes[0]
+                    ns, ne = nxt.get('start_line', '?'), nxt.get('end_line', '?')
+                    print(f"  Next: K {ns}-{ne}  (press 3 again after typing)")
+            self.hacker_mode.start_or_restart()
+            return
+
         print("\n" + "=" * 65)
         print("[3] HACKER MODE: ARMED")
         print("=" * 65)
