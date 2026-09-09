@@ -60,6 +60,14 @@ class CodePilot:
         self._gen_id = 0          # generation counter for model override
         self._active_model_pref = None  # "pro" or "fast"
 
+        # ── DEBUG / PATCH STATE ───────────────────────────────────────
+        self.original_code = None      # first solution, never overwritten
+        self.current_code = None       # latest version after patches
+        self.patch_history = []        # [{attempt, lines, reason, replacement}]
+        self._debug_attempt = 0        # attempt counter
+        self._last_failure_image = None  # (image_bytes, mime) for Pro
+        self._pending_changes = None   # latest patch changes from Pro
+
     # ══════════════════════════════════════════════════════════════════
     # Thread management
     # ══════════════════════════════════════════════════════════════════
@@ -142,6 +150,13 @@ class CodePilot:
         self.computer.stop()
         self.hacker_mode.abort(silent=True)
         self.busy = False
+        # Clear debug/patch state
+        self.original_code = None
+        self.current_code = None
+        self.patch_history = []
+        self._debug_attempt = 0
+        self._last_failure_image = None
+        self._pending_changes = None
         print("\n" + "=" * 65)
         print("[1] RESET - Everything cleared!")
         print("=" * 65)
@@ -307,6 +322,14 @@ class CodePilot:
             return
 
         self.problem_screenshots.clear()
+
+        # Initialize debug state for patch system
+        self.original_code = self.solution
+        self.current_code = self.solution
+        self.patch_history = []
+        self._debug_attempt = 0
+        self._pending_changes = None
+
         print("\n========== PREPARED CODE ==========\n")
         print(self.solution)
         print("\n===================================")
@@ -465,28 +488,72 @@ class CodePilot:
             print("\nResult ambiguous. Press 0 to retry.")
             return
 
-        # FAILED — auto-generate corrected solution
+        # FAILED — auto-repair with patches
         self.failure = result
-        self.previous_code = self.solution
-        print("\nFailure detected. Generating corrected solution...")
+        self._last_failure_image = (image, mime)
 
+        if not self.current_code and self.solution:
+            self.current_code = self.solution
+            self.original_code = self.solution
+
+        if not self.current_code:
+            print("\nNo code to debug. Press 8/9 first.")
+            return
+
+        self._debug_attempt += 1
+        print(f"\nFailure detected. Auto-debugging attempt #{self._debug_attempt}...")
+
+        # Extract detailed failure info
+        failure_info = result
+        try:
+            failure_info = self.agent.inspect_failure(image, mime)
+        except GeminiWebError:
+            pass  # use basic result as fallback
+
+        # Get patch from Pro
         model_pref = self._active_model_pref or "pro"
         model = self.agent.get_model_by_preference(model_pref)
 
         try:
-            self.solution = self.agent.solve(
-                self.problem, self.previous_code, self.failure,
+            patch_result = self.agent.repair(
+                problem=self.problem,
+                current_code=self.current_code,
+                failure_info=failure_info,
+                screenshot=(image, mime),
+                patch_history=self.patch_history,
                 force_model=model
             )
         except GeminiWebError as exc:
             print(f"\n[GEMINI ERROR] {exc}")
-            print("Press 8/9 to retry.")
+            print("Press 0 to retry manually.")
             return
 
-        print("\n========== CORRECTED CODE ==========\n")
-        print(self.solution)
-        print("\n====================================")
-        print("\n2 = Auto Type  |  3 = Hacker Type")
+        if not patch_result or 'changes' not in patch_result or not patch_result['changes']:
+            print("\n[ERROR] No valid patch returned. Press 0 to retry.")
+            return
+
+        changes = patch_result['changes']
+        diagnosis = patch_result.get('diagnosis', '')
+
+        new_code = self._apply_patch(self.current_code, changes)
+        if new_code is None:
+            print("\n[ERROR] Patch failed. Press 0 to retry.")
+            return
+
+        for ch in changes:
+            self.patch_history.append({
+                'attempt': self._debug_attempt,
+                'lines': f"{ch['start_line']}-{ch['end_line']}",
+                'reason': diagnosis[:100],
+                'replacement': ch.get('replacement', '')[:200]
+            })
+
+        self.current_code = new_code
+        self.solution = new_code
+        self.previous_code = new_code
+        self._pending_changes = changes
+
+        self._display_patch(diagnosis, changes, self._debug_attempt)
         self._notify_ready()
 
     # ══════════════════════════════════════════════════════════════════
@@ -637,6 +704,13 @@ class CodePilot:
             self.problem = None
             self.solution = None
             self.problem_screenshots.clear()
+            # Clear debug state
+            self.original_code = None
+            self.current_code = None
+            self.patch_history = []
+            self._debug_attempt = 0
+            self._last_failure_image = None
+            self._pending_changes = None
             print("Ready for next question. Press 7 to capture.")
             self._notify_ready()
             return
@@ -650,29 +724,131 @@ class CodePilot:
             return
 
         self.failure = result
-        self.previous_code = self.solution
+        self._last_failure_image = (image, mime)
 
-        print("\nFailure detected. Generating corrected solution...")
+        # If no current_code yet, fall back to self.solution
+        if not self.current_code and self.solution:
+            self.current_code = self.solution
+            self.original_code = self.solution
 
-        # Use whichever model was last active
+        if not self.current_code:
+            print("\nNo code to debug. Press 8/9 to generate a solution first.")
+            return
+
+        self._debug_attempt += 1
+        print(f"\nFailure detected. Debugging attempt #{self._debug_attempt}...")
+
+        # Step A: Extract detailed failure info from screenshot (vision model)
+        print("[2] Extracting failure details...")
+        failure_info = None
+        try:
+            failure_info = self.agent.inspect_failure(image, mime)
+        except GeminiWebError as exc:
+            print(f"  [WARN] Detailed extraction failed: {exc}")
+            # Fall back to basic inspect_result output
+            failure_info = result
+
+        print(f"  Error: {failure_info.get('error_type', failure_info.get('status', '?'))}")
+        if failure_info.get('expected_output'):
+            print(f"  Expected: {failure_info['expected_output'][:80]}")
+        if failure_info.get('actual_output'):
+            print(f"  Got:      {failure_info['actual_output'][:80]}")
+        if failure_info.get('compiler_message'):
+            print(f"  Compiler: {failure_info['compiler_message'][:100]}")
+
+        # Step B: Send to Pro with full debug context + screenshot
+        print("[3] Pro analyzing bug...")
         model_pref = self._active_model_pref or "pro"
         model = self.agent.get_model_by_preference(model_pref)
 
         try:
-            self.solution = self.agent.solve(
-                self.problem, self.previous_code, self.failure,
+            patch_result = self.agent.repair(
+                problem=self.problem,
+                current_code=self.current_code,
+                failure_info=failure_info,
+                screenshot=(image, mime),
+                patch_history=self.patch_history,
                 force_model=model
             )
         except GeminiWebError as exc:
             print(f"\n[GEMINI ERROR] {exc}")
-            print("Press 8/9 to retry.")
+            print("Press 0 to retry.")
             return
 
-        print("\n========== CORRECTED CODE ==========\n")
-        print(self.solution)
-        print("\n====================================")
-        print("\n2 = Auto Type  |  3 = Hacker Type")
+        if not patch_result or 'changes' not in patch_result:
+            print("\n[ERROR] Pro didn't return a valid patch. Press 0 to retry.")
+            return
+
+        changes = patch_result.get('changes', [])
+        diagnosis = patch_result.get('diagnosis', '')
+
+        if not changes:
+            print("\n[ERROR] Pro returned no changes. Press 0 to retry.")
+            return
+
+        # Step C: Apply patch to current_code
+        new_code = self._apply_patch(self.current_code, changes)
+        if new_code is None:
+            print("\n[ERROR] Patch failed to apply. Press 0 to retry.")
+            return
+
+        # Store patch in history
+        for ch in changes:
+            self.patch_history.append({
+                'attempt': self._debug_attempt,
+                'lines': f"{ch['start_line']}-{ch['end_line']}",
+                'reason': diagnosis[:100],
+                'replacement': ch.get('replacement', '')[:200]
+            })
+
+        # Update state
+        self.current_code = new_code
+        self.solution = new_code  # so pressing 2 types the full updated code
+        self.previous_code = new_code
+        self._pending_changes = changes
+
+        # Step D: Display patch output
+        self._display_patch(diagnosis, changes, self._debug_attempt)
         self._notify_ready()
+
+    @staticmethod
+    def _apply_patch(current_code, changes):
+        """Apply structured patch changes to code. Returns new code or None."""
+        lines = current_code.split('\n')
+        # Apply in reverse order to preserve line numbers
+        sorted_changes = sorted(changes, key=lambda c: c['start_line'], reverse=True)
+        for ch in sorted_changes:
+            start = ch.get('start_line', 1) - 1  # 0-indexed
+            end = ch.get('end_line', start + 1)    # 1-indexed inclusive
+            replacement = ch.get('replacement', '')
+            if start < 0 or start >= len(lines):
+                continue
+            end = min(end, len(lines))
+            new_lines = replacement.split('\n')
+            lines[start:end] = new_lines
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _display_patch(diagnosis, changes, attempt):
+        """Display patch output showing only changed sections."""
+        print(f"\n{'═' * 65}")
+        print(f"  FIX (Attempt {attempt})")
+        print(f"{'═' * 65}")
+        print(f"\n  Diagnosis: {diagnosis}\n")
+        for ch in changes:
+            s = ch.get('start_line', '?')
+            e = ch.get('end_line', s)
+            replacement = ch.get('replacement', '')
+            if s == e:
+                print(f"  K {s}")
+            else:
+                print(f"  K {s}-{e}")
+            for rline in replacement.split('\n'):
+                print(f"    {rline}")
+            print()
+        print(f"{'═' * 65}")
+        print("  2 = Auto Type (full code)  |  3 = Hacker Type")
+        print("  0 = Try again (if still fails)")
 
     # ══════════════════════════════════════════════════════════════════
     # STARTUP

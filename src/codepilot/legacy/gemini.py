@@ -947,6 +947,123 @@ UNKNOWN means the result cannot be determined confidently.
         return parse_json(self._ask(prompt, [(image_bytes, mime)],
                                    force_model=force_model))
 
+    def inspect_failure(self, image_bytes, mime, force_model=None):
+        """Extract detailed failure information from screenshot.
+        Vision model's job: SEE → EXTRACT → REPORT (not solve)."""
+        prompt = """
+Analyze the CURRENT desktop screenshot showing test/submission results.
+
+Extract ALL visible failure information. Return ONLY valid JSON:
+{
+    "error_type": "WRONG_ANSWER|COMPILE_ERROR|RUNTIME_ERROR|TIME_LIMIT|MEMORY_LIMIT",
+    "test_case_number": null,
+    "input": "",
+    "expected_output": "",
+    "actual_output": "",
+    "compiler_message": "",
+    "runtime_message": "",
+    "line_reference": null,
+    "evidence": "",
+    "confidence": 0.95
+}
+
+Rules:
+- Extract EXACTLY what is visible. Do NOT guess or invent values.
+- "input": the test input shown (if visible)
+- "expected_output": the expected output shown (if visible)
+- "actual_output": the actual/wrong output produced (if visible)
+- "compiler_message": exact compiler error text (if visible)
+- "runtime_message": exact runtime error text (if visible)
+- "line_reference": line number mentioned in error (if visible)
+- "evidence": brief description of what you see on screen
+- Leave fields as empty string "" if not visible
+- Your job is to EXTRACT visible information, NOT to solve the problem
+"""
+        return parse_json(self._ask(prompt, [(image_bytes, mime)],
+                                   force_model=force_model))
+
+    def repair(self, problem, current_code, failure_info,
+               screenshot=None, patch_history=None, force_model=None):
+        """Stateless repair: diagnose bug, return structured minimal patch.
+        Every call is independent — full context must be provided."""
+
+        # Number the lines for Pro's reference
+        numbered_lines = []
+        for i, line in enumerate(current_code.split('\n'), 1):
+            numbered_lines.append(f"{i:4d} | {line}")
+        numbered_code = '\n'.join(numbered_lines)
+
+        # Compact patch history
+        history_text = "None (first debugging attempt)"
+        if patch_history:
+            entries = []
+            for p in patch_history[-5:]:  # last 5 attempts max
+                entries.append(
+                    f"  Attempt {p['attempt']}: Lines {p['lines']} — {p['reason']}"
+                )
+            history_text = '\n'.join(entries)
+
+        # Build image list (send screenshot to Pro too)
+        images = []
+        if screenshot:
+            images.append(screenshot)
+
+        # Detect language
+        lang = "C++"
+        if isinstance(problem, dict):
+            lang = problem.get("editor_language", "").strip() or "C++"
+
+        prompt = f"""This is a NEW API request. You have NO memory of any previous request.
+Everything required for this debugging attempt is provided below.
+
+ORIGINAL PROBLEM:
+{problem}
+
+CURRENT CODE (with line numbers):
+```{lang.lower()}
+{numbered_code}
+```
+
+LATEST FAILURE INFORMATION:
+{failure_info}
+
+PREVIOUS FIX ATTEMPTS:
+{history_text}
+
+INSTRUCTIONS:
+1. Analyze the current code against the problem requirements.
+2. The failure information above was extracted from the screenshot — use it as evidence but reason independently.
+3. Determine the ACTUAL root cause by examining the code logic, not just the symptom.
+4. If previous fix attempts are listed, do NOT repeat the same fix. The previous fixes didn't work — find a different root cause.
+5. Find the SMALLEST change that fixes the actual bug. Do NOT redesign the entire solution.
+
+Return ONLY valid JSON with this exact structure:
+{{
+    "diagnosis": "Brief explanation of the root cause",
+    "changes": [
+        {{
+            "start_line": 27,
+            "end_line": 27,
+            "original": "the exact original line(s) being replaced",
+            "replacement": "the corrected line(s)"
+        }}
+    ]
+}}
+
+Rules for changes:
+- Line numbers MUST match the numbered code above
+- Changes MUST be in ascending line-number order
+- Each change should be as small as possible — change individual lines, not whole functions
+- "replacement" must be complete, valid {lang} code (no placeholders, no "...")
+- "original" must exactly match the current code at those lines (without the line numbers)
+- Do NOT include unchanged code
+- Do NOT add comments to the replacement code
+- Keep the same variable names and coding style
+"""
+        raw = self._ask(prompt, images if images else None,
+                        force_model=force_model)
+        return parse_json(raw)
+
     @staticmethod
     def clean_code(text):
         code = text.strip()
