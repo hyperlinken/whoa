@@ -566,27 +566,31 @@ class CodePilot:
             print("\nNo solution ready. Press 8/9 first.")
             return
 
-        # If patches are pending, use patch replacement code only
+        # If patches are pending, type K-line marker + replacement only
         if self._pending_changes:
             changes = self._pending_changes
-            if len(changes) == 1:
-                # Single patch — arm with just the replacement
-                ch = changes[0]
-                s, e = ch.get('start_line', '?'), ch.get('end_line', '?')
-                print(f"\n[3] HACKER MODE: PATCH K {s}-{e}")
-                self.hacker_mode.source_text = ch.get('replacement', '')
-            else:
-                # Multiple patches — arm with first one, show queue
-                ch = changes[0]
-                s, e = ch.get('start_line', '?'), ch.get('end_line', '?')
-                print(f"\n[3] HACKER MODE: PATCH K {s}-{e}  ({len(changes)} patches)")
-                self.hacker_mode.source_text = ch.get('replacement', '')
-                # Shift to next patch for next press of 3
-                self._pending_changes = changes[1:]
-                if self._pending_changes:
-                    nxt = self._pending_changes[0]
-                    ns, ne = nxt.get('start_line', '?'), nxt.get('end_line', '?')
-                    print(f"  Next: K {ns}-{ne}  (press 3 again after typing)")
+            # Build the source text: K-marker + code for each patch
+            parts = []
+            for ch in changes:
+                s = ch.get('start_line', '?')
+                e = ch.get('end_line', s)
+                replacement = ch.get('replacement', '')
+                if s == e:
+                    parts.append(f"K{s}\n{replacement}")
+                else:
+                    parts.append(f"K{s}-{e}\n{replacement}")
+            source = "\n\n".join(parts)
+            self.hacker_mode.source_text = source
+            self._pending_changes = None  # clear after arming
+            n = len(changes)
+            print(f"\n[3] HACKER MODE: {n} patch(es) armed")
+            for ch in changes:
+                s = ch.get('start_line', '?')
+                e = ch.get('end_line', s)
+                if s == e:
+                    print(f"  K{s}")
+                else:
+                    print(f"  K{s}-{e}")
             self.hacker_mode.start_or_restart()
             return
 
@@ -810,6 +814,15 @@ class CodePilot:
         if not changes:
             print("\n[ERROR] Pro returned no changes. Press 0 to retry.")
             return
+
+        # Validate: reject patches that span the whole file
+        total_lines = len(self.current_code.split('\n'))
+        for ch in changes:
+            span = ch.get('end_line', 1) - ch.get('start_line', 1) + 1
+            if span > max(total_lines * 0.5, 5):
+                print(f"\n[REJECTED] Pro returned whole-file change ({span}/{total_lines} lines).")
+                print("  This is not a minimal patch. Press 0 to retry.")
+                return
 
         # Step C: Apply patch to current_code
         new_code = self._apply_patch(self.current_code, changes)
