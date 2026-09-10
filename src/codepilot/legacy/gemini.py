@@ -984,16 +984,9 @@ Rules:
 
     def repair(self, problem, current_code, failure_info,
                screenshot=None, patch_history=None, force_model=None):
-        """Stateless repair: diagnose bug, return structured minimal patch.
-        Every call is independent — full context must be provided."""
-
-        # Number the lines for Pro's reference
-        code_lines = current_code.split('\n')
-        total_lines = len(code_lines)
-        numbered_lines = []
-        for i, line in enumerate(code_lines, 1):
-            numbered_lines.append(f"{i:4d} | {line}")
-        numbered_code = '\n'.join(numbered_lines)
+        """Stateless repair: get corrected code from Pro, compute diff ourselves.
+        Returns {'diagnosis': str, 'changes': [...], 'full_code': str}"""
+        import difflib
 
         # Compact patch history
         history_text = "None"
@@ -1015,66 +1008,75 @@ Rules:
         if isinstance(problem, dict):
             lang = problem.get("editor_language", "").strip() or "C++"
 
-        prompt = f"""You MUST return ONLY a JSON patch. Do NOT return full code.
-
-EXAMPLE of correct output (for a missing semicolon on line 17):
-{{"diagnosis":"Missing semicolon after return","changes":[{{"start_line":17,"end_line":17,"original":"        return {{}}","replacement":"        return {{}};"}},{{"start_line":17,"end_line":17,"original":"        return {{}}","replacement":"        return {{}};}}]}}
-
-RULES:
-- Return ONLY the JSON object, nothing else
-- Each change must target 1-3 lines maximum
-- "replacement" = only the fixed line(s), NOT the whole program
-- Do NOT return the entire code as a single change
+        prompt = f"""Fix the bug in this code. Return ONLY the corrected code, nothing else.
 
 PROBLEM: {problem}
 
-CODE ({total_lines} lines):
-```
-{numbered_code}
+CURRENT CODE:
+```{lang.lower()}
+{current_code}
 ```
 
 FAILURE: {failure_info}
 
-PREVIOUS FIXES: {history_text}
+PREVIOUS FIXES THAT DID NOT WORK: {history_text}
 
-Find the bug. Return the minimal JSON patch."""
+RULES:
+- Return ONLY the corrected {lang} code
+- Fix ONLY the bug, keep everything else the same
+- Do NOT add comments
+- Do NOT change variable names or coding style
+- If previous fixes are listed, try a DIFFERENT approach
+- First line of your response must be code, no markdown, no explanation"""
 
-        for attempt in range(2):
-            raw = self._ask(prompt if attempt == 0 else retry_prompt,
-                            images if images else None,
-                            force_model=force_model)
-            result = parse_json(raw)
-            if not result or 'changes' not in result:
+        raw = self._ask(prompt, images if images else None,
+                        force_model=force_model)
+        new_code = self.clean_code(raw)
+
+        if not new_code or len(new_code.strip()) < 5:
+            return None
+
+        # Compute diff: extract only the changed lines
+        old_lines = current_code.split('\n')
+        new_lines = new_code.split('\n')
+
+        sm = difflib.SequenceMatcher(None, old_lines, new_lines)
+        changes = []
+        diagnosis_parts = []
+
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == 'equal':
                 continue
+            # tag is 'replace', 'insert', or 'delete'
+            old_chunk = '\n'.join(old_lines[i1:i2]) if i1 < i2 else ''
+            new_chunk = '\n'.join(new_lines[j1:j2]) if j1 < j2 else ''
+            changes.append({
+                'start_line': i1 + 1,  # 1-indexed
+                'end_line': max(i2, i1 + 1),  # at least 1 line
+                'original': old_chunk,
+                'replacement': new_chunk,
+                'type': tag
+            })
+            if tag == 'replace':
+                diagnosis_parts.append(
+                    f"Lines {i1+1}-{i2}: changed")
+            elif tag == 'insert':
+                diagnosis_parts.append(
+                    f"After line {i1}: inserted {j2-j1} line(s)")
+            elif tag == 'delete':
+                diagnosis_parts.append(
+                    f"Lines {i1+1}-{i2}: removed")
 
-            # Validate: reject if any change spans too many lines
-            bad = False
-            for ch in result.get('changes', []):
-                span = ch.get('end_line', 1) - ch.get('start_line', 1) + 1
-                if span > max(total_lines * 0.4, 4):
-                    bad = True
-                    break
-            if bad and attempt == 0:
-                retry_prompt = f"""Your previous answer was WRONG. You returned the ENTIRE code as one change.
+        if not changes:
+            return None
 
-I need a PATCH, not the whole file. The code has {total_lines} lines. Your change should touch at most 3-4 lines.
+        diagnosis = '; '.join(diagnosis_parts) if diagnosis_parts else 'Code modified'
 
-FAILURE: {failure_info}
-
-CODE:
-```
-{numbered_code}
-```
-
-Return ONLY: {{"diagnosis":"...","changes":[{{"start_line":N,"end_line":N,"original":"exact old line","replacement":"fixed line"}}]}}
-
-Maximum 4 lines per change. Do NOT return the whole program."""
-                continue
-            if bad:
-                return None
-            return result
-
-        return None
+        return {
+            'diagnosis': diagnosis,
+            'changes': changes,
+            'full_code': new_code
+        }
 
     @staticmethod
     def clean_code(text):

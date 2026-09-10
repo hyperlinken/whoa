@@ -535,10 +535,7 @@ class CodePilot:
         changes = patch_result['changes']
         diagnosis = patch_result.get('diagnosis', '')
 
-        new_code = self._apply_patch(self.current_code, changes)
-        if new_code is None:
-            print("\n[ERROR] Patch failed. Press 0 to retry.")
-            return
+        new_code = patch_result.get('full_code', self.current_code)
 
         for ch in changes:
             self.patch_history.append({
@@ -813,14 +810,11 @@ class CodePilot:
         diagnosis = patch_result.get('diagnosis', '')
 
         if not changes:
-            print("\n[ERROR] Pro returned no changes. Press 0 to retry.")
+            print("\n[ERROR] Code unchanged — Pro returned identical code. Press 0 to retry.")
             return
 
-        # Step C: Apply patch to current_code
-        new_code = self._apply_patch(self.current_code, changes)
-        if new_code is None:
-            print("\n[ERROR] Patch failed to apply. Press 0 to retry.")
-            return
+        # Use the full corrected code from Pro (diff was computed by repair())
+        new_code = patch_result.get('full_code', self.current_code)
 
         # Store patch in history
         for ch in changes:
