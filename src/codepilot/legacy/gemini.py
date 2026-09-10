@@ -988,22 +988,24 @@ Rules:
         Every call is independent — full context must be provided."""
 
         # Number the lines for Pro's reference
+        code_lines = current_code.split('\n')
+        total_lines = len(code_lines)
         numbered_lines = []
-        for i, line in enumerate(current_code.split('\n'), 1):
+        for i, line in enumerate(code_lines, 1):
             numbered_lines.append(f"{i:4d} | {line}")
         numbered_code = '\n'.join(numbered_lines)
 
         # Compact patch history
-        history_text = "None (first debugging attempt)"
+        history_text = "None"
         if patch_history:
             entries = []
-            for p in patch_history[-5:]:  # last 5 attempts max
+            for p in patch_history[-5:]:
                 entries.append(
                     f"  Attempt {p['attempt']}: Lines {p['lines']} — {p['reason']}"
                 )
             history_text = '\n'.join(entries)
 
-        # Build image list (send screenshot to Pro too)
+        # Build image list
         images = []
         if screenshot:
             images.append(screenshot)
@@ -1013,56 +1015,66 @@ Rules:
         if isinstance(problem, dict):
             lang = problem.get("editor_language", "").strip() or "C++"
 
-        prompt = f"""This is a NEW API request. You have NO memory of any previous request.
-Everything required for this debugging attempt is provided below.
+        prompt = f"""You MUST return ONLY a JSON patch. Do NOT return full code.
 
-ORIGINAL PROBLEM:
-{problem}
+EXAMPLE of correct output (for a missing semicolon on line 17):
+{{"diagnosis":"Missing semicolon after return","changes":[{{"start_line":17,"end_line":17,"original":"        return {{}}","replacement":"        return {{}};"}},{{"start_line":17,"end_line":17,"original":"        return {{}}","replacement":"        return {{}};}}]}}
 
-CURRENT CODE (with line numbers):
-```{lang.lower()}
+RULES:
+- Return ONLY the JSON object, nothing else
+- Each change must target 1-3 lines maximum
+- "replacement" = only the fixed line(s), NOT the whole program
+- Do NOT return the entire code as a single change
+
+PROBLEM: {problem}
+
+CODE ({total_lines} lines):
+```
 {numbered_code}
 ```
 
-LATEST FAILURE INFORMATION:
-{failure_info}
+FAILURE: {failure_info}
 
-PREVIOUS FIX ATTEMPTS:
-{history_text}
+PREVIOUS FIXES: {history_text}
 
-INSTRUCTIONS:
-1. Analyze the current code against the problem requirements.
-2. The failure information above was extracted from the screenshot — use it as evidence but reason independently.
-3. Determine the ACTUAL root cause by examining the code logic, not just the symptom.
-4. If previous fix attempts are listed, do NOT repeat the same fix. The previous fixes didn't work — find a different root cause.
-5. Find the SMALLEST change that fixes the actual bug. Do NOT redesign the entire solution.
+Find the bug. Return the minimal JSON patch."""
 
-Return ONLY valid JSON with this exact structure:
-{{
-    "diagnosis": "Brief explanation of the root cause",
-    "changes": [
-        {{
-            "start_line": 27,
-            "end_line": 27,
-            "original": "the exact original line(s) being replaced",
-            "replacement": "the corrected line(s)"
-        }}
-    ]
-}}
+        for attempt in range(2):
+            raw = self._ask(prompt if attempt == 0 else retry_prompt,
+                            images if images else None,
+                            force_model=force_model)
+            result = parse_json(raw)
+            if not result or 'changes' not in result:
+                continue
 
-Rules for changes:
-- Line numbers MUST match the numbered code above
-- Changes MUST be in ascending line-number order
-- Each change should be as small as possible — change individual lines, not whole functions
-- "replacement" must be complete, valid {lang} code (no placeholders, no "...")
-- "original" must exactly match the current code at those lines (without the line numbers)
-- Do NOT include unchanged code
-- Do NOT add comments to the replacement code
-- Keep the same variable names and coding style
-"""
-        raw = self._ask(prompt, images if images else None,
-                        force_model=force_model)
-        return parse_json(raw)
+            # Validate: reject if any change spans too many lines
+            bad = False
+            for ch in result.get('changes', []):
+                span = ch.get('end_line', 1) - ch.get('start_line', 1) + 1
+                if span > max(total_lines * 0.4, 4):
+                    bad = True
+                    break
+            if bad and attempt == 0:
+                retry_prompt = f"""Your previous answer was WRONG. You returned the ENTIRE code as one change.
+
+I need a PATCH, not the whole file. The code has {total_lines} lines. Your change should touch at most 3-4 lines.
+
+FAILURE: {failure_info}
+
+CODE:
+```
+{numbered_code}
+```
+
+Return ONLY: {{"diagnosis":"...","changes":[{{"start_line":N,"end_line":N,"original":"exact old line","replacement":"fixed line"}}]}}
+
+Maximum 4 lines per change. Do NOT return the whole program."""
+                continue
+            if bad:
+                return None
+            return result
+
+        return None
 
     @staticmethod
     def clean_code(text):

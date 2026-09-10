@@ -805,7 +805,8 @@ class CodePilot:
             return
 
         if not patch_result or 'changes' not in patch_result:
-            print("\n[ERROR] Pro didn't return a valid patch. Press 0 to retry.")
+            print("\n[ERROR] Pro couldn't generate a minimal patch (returned full code).")
+            print("  Press 0 to retry, or 8/9 to regenerate from scratch.")
             return
 
         changes = patch_result.get('changes', [])
@@ -814,15 +815,6 @@ class CodePilot:
         if not changes:
             print("\n[ERROR] Pro returned no changes. Press 0 to retry.")
             return
-
-        # Validate: reject patches that span the whole file
-        total_lines = len(self.current_code.split('\n'))
-        for ch in changes:
-            span = ch.get('end_line', 1) - ch.get('start_line', 1) + 1
-            if span > max(total_lines * 0.5, 5):
-                print(f"\n[REJECTED] Pro returned whole-file change ({span}/{total_lines} lines).")
-                print("  This is not a minimal patch. Press 0 to retry.")
-                return
 
         # Step C: Apply patch to current_code
         new_code = self._apply_patch(self.current_code, changes)
