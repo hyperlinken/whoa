@@ -768,9 +768,8 @@ class CodePilot:
             self.current_code = self.solution
             self.original_code = self.solution
 
-        _dbg.debug("Step4: current_code=%s", "YES" if self.current_code else "NO")
-        if not self.current_code:
-            print("\n  No code in memory. Will extract from screen context.")
+        has_code = bool(self.current_code)
+        _dbg.debug("Step4: current_code=%s", "YES" if has_code else "NO")
 
         # Step 5: Build full text context for Pro (NO images)
         self._debug_attempt += 1
@@ -798,8 +797,8 @@ class CodePilot:
         full_context = "\n\n".join(context_parts)
         _dbg.debug("Step5: context length=%d", len(full_context))
 
-        # Step 6: Send to Pro (TEXT ONLY) to get corrected code
-        _dbg.debug("Step6: calling repair...")
+        # Step 6: Send to Pro (TEXT ONLY)
+        _dbg.debug("Step6: calling repair... has_code=%s", has_code)
         model_pref = self._active_model_pref or "pro"
         model = self.agent.get_model_by_preference(model_pref)
         _dbg.debug("Step6: model=%s", model)
@@ -820,18 +819,38 @@ class CodePilot:
             return
 
         _dbg.debug("Step6: patch_result=%s", type(patch_result))
-        if not patch_result or 'changes' not in patch_result:
-            _dbg.debug("Step6: no valid result, patch_result=%s", patch_result)
+        if not patch_result:
+            _dbg.debug("Step6: no valid result")
             print("\n[ERROR] Pro couldn't generate a fix. Press 0 to retry.")
             return
 
+        new_code = patch_result.get('full_code', '')
+        if not new_code or len(new_code.strip()) < 5:
+            _dbg.debug("Step6: empty full_code")
+            print("\n[ERROR] Pro returned empty code. Press 0 to retry.")
+            return
+
+        # ── CASE A: No prior code — this is a SOLVE, not a debug ──
+        if not has_code:
+            _dbg.debug("Step7: SOLVE mode — setting full solution, no patches")
+            self.current_code = new_code
+            self.original_code = new_code
+            self.solution = new_code
+            self.previous_code = new_code
+            self._pending_changes = None  # NO patches — key 3 types full code
+            print("\n[SOLVED] Code generated from context. Press 3 to type.")
+            _dbg.debug("=== KEY 0 DONE (SOLVE) ===")
+            self._notify_ready()
+            return
+
+        # ── CASE B: Has prior code — compute diff, set patches ──
         changes = patch_result.get('changes', [])
         diagnosis = patch_result.get('diagnosis', '')
-        _dbg.debug("Step6: %d changes, diagnosis=%s", len(changes), diagnosis[:100])
+        _dbg.debug("Step7: DEBUG mode — %d changes", len(changes))
 
         if not changes:
-            _dbg.debug("Step6: no changes (identical code)")
-            print("\n[ERROR] Code unchanged — no differences found. Press 0 to retry.")
+            _dbg.debug("Step7: no changes (identical code)")
+            print("\n[OK] Code looks correct — no changes needed.")
             return
 
         # Log each change
@@ -840,9 +859,7 @@ class CodePilot:
                         i, ch.get('start_line'), ch.get('end_line'),
                         ch.get('type', '?'), len(ch.get('replacement', '')))
 
-        # Step 7: Apply
-        new_code = patch_result.get('full_code', self.current_code)
-
+        # Store patches
         for ch in changes:
             self.patch_history.append({
                 'attempt': self._debug_attempt,
@@ -857,9 +874,9 @@ class CodePilot:
         self._pending_changes = changes
         _dbg.debug("Step7: _pending_changes set, %d changes", len(changes))
 
-        # Step 8: Display patches
+        # Display patches
         self._display_patch(diagnosis, changes, self._debug_attempt)
-        _dbg.debug("=== KEY 0 DONE ===")
+        _dbg.debug("=== KEY 0 DONE (DEBUG) ===")
         self._notify_ready()
 
     @staticmethod
