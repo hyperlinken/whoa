@@ -76,6 +76,7 @@ class CodePilot:
         self._last_failure_image = None  # (image_bytes, mime) for Pro
         self._pending_changes = None   # latest patch changes from Pro
         self.debug_context = []        # extracted text from key 7 screenshots
+        self._from_debug = False       # True if solution came from key 0 (debug)
 
     # ══════════════════════════════════════════════════════════════════
     # Thread management
@@ -167,6 +168,7 @@ class CodePilot:
         self._last_failure_image = None
         self._pending_changes = None
         self.debug_context = []
+        self._from_debug = False
         print("\n" + "=" * 65)
         print("[1] RESET - Everything cleared!")
         print("=" * 65)
@@ -339,6 +341,7 @@ class CodePilot:
         self.patch_history = []
         self._debug_attempt = 0
         self._pending_changes = None
+        self._from_debug = False  # came from 8/9 solve, not debug
 
         print("\n========== PREPARED CODE ==========\n")
         print(self.solution)
@@ -572,12 +575,12 @@ class CodePilot:
 
     def type_solution_hacker(self):
         """3: Arm hacker mode — mash keys to type code."""
-        _dbg.debug("=== KEY 3 PRESSED === solution=%s pending=%s",
+        _dbg.debug("=== KEY 3 PRESSED === solution=%s pending=%s debug=%s",
                     "YES" if self.solution else "NO",
-                    len(self._pending_changes) if self._pending_changes else "None")
+                    len(self._pending_changes) if self._pending_changes else "None",
+                    self._from_debug)
         if not self.solution:
             _dbg.debug("KEY3: no solution, aborting")
-            print("\nNo solution ready. Press 8/9 first.")
             return
 
         # If patches are pending, type K-line marker + replacement only
@@ -598,22 +601,16 @@ class CodePilot:
                         len(source), repr(source[:200]))
             self.hacker_mode.source_text = source
             self._pending_changes = None  # clear after arming
-            n = len(changes)
-            print(f"\n[3] HACKER MODE: {n} patch(es) armed")
-            for ch in changes:
-                s = ch.get('start_line', '?')
-                e = ch.get('end_line', s)
-                if s == e:
-                    print(f"  K{s}")
-                else:
-                    print(f"  K{s}-{e}")
             self.hacker_mode.start_or_restart()
             return
 
-        _dbg.debug("KEY3: no patches, using full solution len=%d", len(self.solution))
-        print("\n" + "=" * 65)
-        print("[3] HACKER MODE: ARMED")
-        print("=" * 65)
+        # In debug mode, patches were already consumed — do nothing
+        if self._from_debug:
+            _dbg.debug("KEY3: debug mode, patches consumed, doing nothing")
+            return
+
+        # Solve mode (8/9): type full solution
+        _dbg.debug("KEY3: solve mode, full solution len=%d", len(self.solution))
         self.hacker_mode.source_text = self.solution
         self.hacker_mode.start_or_restart()
 
@@ -852,6 +849,7 @@ class CodePilot:
             self.solution = new_code
             self.previous_code = new_code
             self._pending_changes = None  # NO patches — key 3 types full code
+            self._from_debug = False  # allow full solution typing
             print("\n[SOLVED] Code generated from context. Press 3 to type.")
             _dbg.debug("=== KEY 0 DONE (SOLVE) ===")
             self._notify_ready()
@@ -886,6 +884,7 @@ class CodePilot:
         self.solution = new_code
         self.previous_code = new_code
         self._pending_changes = changes
+        self._from_debug = True  # key 3 should ONLY type patches, not full code
         _dbg.debug("Step7: _pending_changes set, %d changes", len(changes))
 
         # Display patches
