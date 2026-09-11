@@ -983,8 +983,9 @@ Rules:
                                    force_model=force_model))
 
     def repair(self, problem, current_code, failure_info,
-               screenshot=None, patch_history=None, force_model=None):
+               screenshots=None, patch_history=None, force_model=None):
         """Stateless repair: get corrected code from Pro, compute diff ourselves.
+        screenshots is a list of (image_bytes, mime) tuples.
         Returns {'diagnosis': str, 'changes': [...], 'full_code': str}"""
         import difflib
 
@@ -998,18 +999,21 @@ Rules:
                 )
             history_text = '\n'.join(entries)
 
-        # Build image list
-        images = []
-        if screenshot:
-            images.append(screenshot)
+        # Build image list — all context screenshots + current result
+        images = list(screenshots) if screenshots else []
 
         # Detect language
         lang = "C++"
         if isinstance(problem, dict):
             lang = problem.get("editor_language", "").strip() or "C++"
 
-        prompt = f"""Fix the bug in this code. Return ONLY the corrected code, nothing else.
+        n_images = len(images)
+        ctx_note = ""
+        if n_images > 1:
+            ctx_note = f"\nThe attached {n_images} screenshots show: earlier ones are the problem/context captured previously, the last one is the current test result with the error.\n"
 
+        prompt = f"""Fix the bug in this code. Return ONLY the corrected code, nothing else.
+{ctx_note}
 PROBLEM: {problem}
 
 CURRENT CODE:

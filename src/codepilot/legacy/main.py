@@ -185,8 +185,9 @@ class CodePilot:
 
         self.problem_screenshots.append((image, mime))
         log.info("Screenshot queued: total=%d", len(self.problem_screenshots))
-        print(f"-> Captured! Total in queue: {len(self.problem_screenshots)}")
-        print("7 = more screenshots | 8 = Solve (Pro) | 9 = Solve (Fast)")
+        print(f"-> Captured! Total in session: {len(self.problem_screenshots)}")
+        print("  7 = more screenshots | 0 = debug with context")
+        print("  8 = Solve (Pro) | 9 = Solve (Fast)")
 
     # ══════════════════════════════════════════════════════════════════
     # 8 / 9: ANALYZE + SOLVE (with model override)
@@ -514,12 +515,15 @@ class CodePilot:
         model_pref = self._active_model_pref or "pro"
         model = self.agent.get_model_by_preference(model_pref)
 
+        # Combine context screenshots (from key 7) + current result
+        all_screenshots = list(self.problem_screenshots) + [(image, mime)]
+
         try:
             patch_result = self.agent.repair(
                 problem=self.problem,
                 current_code=self.current_code,
                 failure_info=failure_info,
-                screenshot=(image, mime),
+                screenshots=all_screenshots,
                 patch_history=self.patch_history,
                 force_model=model
             )
@@ -782,17 +786,23 @@ class CodePilot:
         if failure_info.get('compiler_message'):
             print(f"  Compiler: {failure_info['compiler_message'][:100]}")
 
-        # Step B: Send to Pro with full debug context + screenshot
+        # Step B: Send to Pro with full debug context + ALL screenshots
         print("[3] Pro analyzing bug...")
+        n_ctx = len(self.problem_screenshots)
+        if n_ctx:
+            print(f"  Sending {n_ctx} context screenshot(s) + current result")
         model_pref = self._active_model_pref or "pro"
         model = self.agent.get_model_by_preference(model_pref)
+
+        # Combine context screenshots (from key 7) + current result screenshot
+        all_screenshots = list(self.problem_screenshots) + [(image, mime)]
 
         try:
             patch_result = self.agent.repair(
                 problem=self.problem,
                 current_code=self.current_code,
                 failure_info=failure_info,
-                screenshot=(image, mime),
+                screenshots=all_screenshots,
                 patch_history=self.patch_history,
                 force_model=model
             )
