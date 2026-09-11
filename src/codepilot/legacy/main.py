@@ -768,6 +768,20 @@ class CodePilot:
             self.current_code = self.solution
             self.original_code = self.solution
 
+        # If still no code, try to extract it from the current screenshot
+        if not self.current_code:
+            _dbg.debug("Step4: no code in memory, extracting from screenshot...")
+            try:
+                extracted_code = self.agent.extract_code_from_screen(image, mime)
+                if extracted_code and len(extracted_code.strip()) > 5:
+                    self.current_code = extracted_code
+                    self.original_code = extracted_code
+                    _dbg.debug("Step4: extracted code from screen, len=%d", len(extracted_code))
+                else:
+                    _dbg.debug("Step4: code extraction returned empty/short")
+            except Exception as exc:
+                _dbg.debug("Step4: code extraction failed: %s", exc)
+
         has_code = bool(self.current_code)
         _dbg.debug("Step4: current_code=%s", "YES" if has_code else "NO")
 

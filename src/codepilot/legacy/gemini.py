@@ -1002,6 +1002,25 @@ Do NOT solve anything, just transcribe what you see."""
         return self._ask(prompt, [(image_bytes, mime)],
                          force_model=model)
 
+    def extract_code_from_screen(self, image_bytes, mime, force_model=None):
+        """Extract ONLY the source code from a screenshot of a code editor.
+        Returns clean code string (no line numbers, no UI elements)."""
+        prompt = """Look at this screenshot of a code editor.
+Extract ONLY the source code that is visible in the editor.
+
+RULES:
+- Return ONLY the code, nothing else
+- Remove line numbers if shown
+- Preserve exact indentation and formatting
+- Do NOT add any explanation, markdown, or comments
+- Do NOT add ``` markers
+- First character of your response must be code"""
+
+        model = force_model or self.API_MODEL_FLASH
+        raw = self._ask(prompt, [(image_bytes, mime)],
+                        force_model=model)
+        return self.clean_code(raw) if raw else None
+
     def repair(self, problem, current_code, failure_info,
                screenshots=None, patch_history=None, force_model=None):
         """Stateless repair: get corrected code from Pro, compute diff ourselves.
