@@ -67,6 +67,7 @@ class CodePilot:
         self._debug_attempt = 0        # attempt counter
         self._last_failure_image = None  # (image_bytes, mime) for Pro
         self._pending_changes = None   # latest patch changes from Pro
+        self.debug_context = []        # extracted text from key 7 screenshots
 
     # ══════════════════════════════════════════════════════════════════
     # Thread management
@@ -157,6 +158,7 @@ class CodePilot:
         self._debug_attempt = 0
         self._last_failure_image = None
         self._pending_changes = None
+        self.debug_context = []
         print("\n" + "=" * 65)
         print("[1] RESET - Everything cleared!")
         print("=" * 65)
@@ -167,9 +169,9 @@ class CodePilot:
     # ══════════════════════════════════════════════════════════════════
 
     def queue_screenshot(self):
-        """7: Capture screen and add to queue."""
+        """7: Capture screen and store. Processing happens at key 0."""
         print("\n" + "=" * 65)
-        print("[7] STEALTH CAPTURE")
+        print("[7] CAPTURE")
         print("=" * 65)
 
         try:
@@ -184,10 +186,9 @@ class CodePilot:
                 return
 
         self.problem_screenshots.append((image, mime))
-        log.info("Screenshot queued: total=%d", len(self.problem_screenshots))
-        print(f"-> Captured! Total in session: {len(self.problem_screenshots)}")
-        print("  7 = more screenshots | 0 = debug with context")
-        print("  8 = Solve (Pro) | 9 = Solve (Fast)")
+        n = len(self.problem_screenshots)
+        print(f"  -> Captured! Total stored: {n}")
+        print("  7 = more | 0 = debug | 8 = Solve (Pro) | 9 = Solve (Fast)")
 
     # ══════════════════════════════════════════════════════════════════
     # 8 / 9: ANALYZE + SOLVE (with model override)
@@ -691,9 +692,10 @@ class CodePilot:
 
     def analyze_result(self):
         print("\n" + "=" * 65)
-        print("[0] ANALYZE CURRENT RESULT")
+        print("[0] DEBUG / ANALYZE")
         print("=" * 65)
 
+        # Step 1: Capture current screen
         try:
             image, mime = self.computer.capture_desktop()
         except StealthAbort as e:
@@ -705,104 +707,86 @@ class CodePilot:
                 print(f"  [ERROR] Fallback capture failed: {e2}")
                 return
 
-        print("[1] Analyzing result...")
-        # Auto-retry once on transient error
-        result = None
-        for retry in range(2):
-            try:
-                result = self.agent.inspect_result(image, mime)
-                break
-            except GeminiWebError as exc:
-                if retry == 0:
-                    print(f"\n[RETRY] {exc}")
-                    print("[RETRY] Retrying in 3s...")
-                    time.sleep(3)
-                else:
-                    print(f"\n[GEMINI ERROR] {exc}")
-                    print("Press 0 to try again.")
-                    return
+        # Step 2: Process ALL stored screenshots from key 7 via API Flash
+        extracted_contexts = []
+        stored = self.problem_screenshots
+        if stored:
+            print(f"[1] Processing {len(stored)} stored screenshot(s) via API Flash...")
+            for i, (img, m) in enumerate(stored, 1):
+                try:
+                    text = self.agent.extract_screen_info(img, m)
+                    if text and text.strip():
+                        extracted_contexts.append(f"[Screenshot {i}]\n{text.strip()}")
+                        print(f"  Screenshot {i}/{len(stored)}: extracted")
+                    else:
+                        print(f"  Screenshot {i}/{len(stored)}: empty")
+                except Exception as exc:
+                    print(f"  Screenshot {i}/{len(stored)}: failed ({exc})")
 
-        print("\nStatus:", result.get("status"))
-        print("Evidence:", result.get("evidence"))
+        # Step 3: Extract current screen info via API Flash
+        print("[2] Extracting current screen info...")
+        current_screen_text = None
+        try:
+            current_screen_text = self.agent.extract_screen_info(image, mime)
+        except GeminiWebError as exc:
+            print(f"  [WARN] Extraction failed: {exc}")
 
-        status = result.get("status", "UNKNOWN")
+        if not current_screen_text or not current_screen_text.strip():
+            print("  [WARN] Could not extract screen info.")
+            current_screen_text = "(Screen extraction failed)"
+        else:
+            print(f"  Extracted: {current_screen_text[:100]}...")
 
-        if status == "ACCEPTED":
-            print("\n================ SOLVED ================")
-            self.previous_code = None
-            self.failure = None
-            self.problem = None
-            self.solution = None
-            self.problem_screenshots.clear()
-            # Clear debug state
-            self.original_code = None
-            self.current_code = None
-            self.patch_history = []
-            self._debug_attempt = 0
-            self._last_failure_image = None
-            self._pending_changes = None
-            print("Ready for next question. Press 7 to capture.")
-            self._notify_ready()
-            return
-
-        if status in {"RUNNING", "NO_RESULT"}:
-            print("\nNo final result visible. Press 0 again when ready.")
-            return
-
-        if status == "UNKNOWN":
-            print("\nResult is ambiguous. Stopping rather than guessing.")
-            return
-
-        self.failure = result
-        self._last_failure_image = (image, mime)
-
-        # If no current_code yet, fall back to self.solution
+        # Step 4: Build code context
         if not self.current_code and self.solution:
             self.current_code = self.solution
             self.original_code = self.solution
 
         if not self.current_code:
-            print("\nNo code to debug. Press 8/9 to generate a solution first.")
-            return
+            print("\n  No code in memory. Will extract from screen context.")
 
+        # Step 5: Build full text context for Pro (NO images)
         self._debug_attempt += 1
-        print(f"\nFailure detected. Debugging attempt #{self._debug_attempt}...")
+        print(f"\n[3] Building debug context (attempt #{self._debug_attempt})...")
 
-        # Step A: Extract detailed failure info from screenshot (vision model)
-        print("[2] Extracting failure details...")
-        failure_info = None
-        try:
-            failure_info = self.agent.inspect_failure(image, mime)
-        except GeminiWebError as exc:
-            print(f"  [WARN] Detailed extraction failed: {exc}")
-            # Fall back to basic inspect_result output
-            failure_info = result
+        context_parts = []
 
-        print(f"  Error: {failure_info.get('error_type', failure_info.get('status', '?'))}")
-        if failure_info.get('expected_output'):
-            print(f"  Expected: {failure_info['expected_output'][:80]}")
-        if failure_info.get('actual_output'):
-            print(f"  Got:      {failure_info['actual_output'][:80]}")
-        if failure_info.get('compiler_message'):
-            print(f"  Compiler: {failure_info['compiler_message'][:100]}")
+        # A: Extracted text from stored screenshots (key 7)
+        if extracted_contexts:
+            print(f"  Including {len(extracted_contexts)} context item(s)")
+            context_parts.append("=== PREVIOUSLY CAPTURED CONTEXT ===")
+            for ctx in extracted_contexts:
+                context_parts.append(ctx)
 
-        # Step B: Send to Pro with full debug context + ALL screenshots
-        print("[3] Pro analyzing bug...")
-        n_ctx = len(self.problem_screenshots)
-        if n_ctx:
-            print(f"  Sending {n_ctx} context screenshot(s) + current result")
+        # B: Current screen (just extracted)
+        context_parts.append("=== CURRENT SCREEN (just captured) ===")
+        context_parts.append(current_screen_text.strip())
+
+        # C: Current code
+        if self.current_code:
+            context_parts.append("=== CURRENT CODE IN EDITOR ===")
+            context_parts.append(self.current_code)
+
+        # D: Patch history
+        if self.patch_history:
+            context_parts.append("=== PREVIOUS FIX ATTEMPTS (did not work) ===")
+            for p in self.patch_history[-5:]:
+                context_parts.append(
+                    f"Attempt {p['attempt']}: Lines {p['lines']} — {p['reason']}")
+
+        full_context = "\n\n".join(context_parts)
+
+        # Step 5: Send to Pro (TEXT ONLY) to get corrected code
+        print("[3] Sending to Pro (text only)...")
         model_pref = self._active_model_pref or "pro"
         model = self.agent.get_model_by_preference(model_pref)
 
-        # Combine context screenshots (from key 7) + current result screenshot
-        all_screenshots = list(self.problem_screenshots) + [(image, mime)]
-
         try:
             patch_result = self.agent.repair(
-                problem=self.problem,
-                current_code=self.current_code,
-                failure_info=failure_info,
-                screenshots=all_screenshots,
+                problem=full_context,
+                current_code=self.current_code or "",
+                failure_info=current_screen_text,
+                screenshots=None,  # NO images to Pro
                 patch_history=self.patch_history,
                 force_model=model
             )
@@ -812,21 +796,19 @@ class CodePilot:
             return
 
         if not patch_result or 'changes' not in patch_result:
-            print("\n[ERROR] Pro couldn't generate a minimal patch (returned full code).")
-            print("  Press 0 to retry, or 8/9 to regenerate from scratch.")
+            print("\n[ERROR] Pro couldn't generate a fix. Press 0 to retry.")
             return
 
         changes = patch_result.get('changes', [])
         diagnosis = patch_result.get('diagnosis', '')
 
         if not changes:
-            print("\n[ERROR] Code unchanged — Pro returned identical code. Press 0 to retry.")
+            print("\n[ERROR] Code unchanged — no differences found. Press 0 to retry.")
             return
 
-        # Use the full corrected code from Pro (diff was computed by repair())
+        # Step 6: Apply
         new_code = patch_result.get('full_code', self.current_code)
 
-        # Store patch in history
         for ch in changes:
             self.patch_history.append({
                 'attempt': self._debug_attempt,
@@ -835,13 +817,12 @@ class CodePilot:
                 'replacement': ch.get('replacement', '')[:200]
             })
 
-        # Update state
         self.current_code = new_code
-        self.solution = new_code  # so pressing 2 types the full updated code
+        self.solution = new_code
         self.previous_code = new_code
         self._pending_changes = changes
 
-        # Step D: Display patch output
+        # Step 7: Display patches
         self._display_patch(diagnosis, changes, self._debug_attempt)
         self._notify_ready()
 

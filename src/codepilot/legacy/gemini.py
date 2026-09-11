@@ -982,6 +982,24 @@ Rules:
         return parse_json(self._ask(prompt, [(image_bytes, mime)],
                                    force_model=force_model))
 
+    def extract_screen_info(self, image_bytes, mime, force_model=None):
+        """Extract ALL visible information from screenshot as plain text.
+        Uses vision model (API Flash). Returns a text description."""
+        prompt = """Look at this screenshot and extract ALL visible information as plain text.
+
+Include:
+- Any problem/question title and description
+- Any code visible (preserve formatting and line numbers if shown)
+- Any error messages, compiler output, test results
+- Any input/output examples
+- Any constraints or notes
+
+Format as plain readable text. Be thorough — extract EVERYTHING visible.
+Do NOT solve anything, just transcribe what you see."""
+
+        return self._ask(prompt, [(image_bytes, mime)],
+                         force_model=force_model)
+
     def repair(self, problem, current_code, failure_info,
                screenshots=None, patch_history=None, force_model=None):
         """Stateless repair: get corrected code from Pro, compute diff ourselves.
