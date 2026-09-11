@@ -984,7 +984,7 @@ Rules:
 
     def extract_screen_info(self, image_bytes, mime, force_model=None):
         """Extract ALL visible information from screenshot as plain text.
-        Uses vision model (API Flash). Returns a text description."""
+        Uses API Flash (vision capable). Returns a text description."""
         prompt = """Look at this screenshot and extract ALL visible information as plain text.
 
 Include:
@@ -997,8 +997,10 @@ Include:
 Format as plain readable text. Be thorough — extract EVERYTHING visible.
 Do NOT solve anything, just transcribe what you see."""
 
+        # Always use API Flash for image extraction (vision capable)
+        model = force_model or self.API_MODEL_FLASH
         return self._ask(prompt, [(image_bytes, mime)],
-                         force_model=force_model)
+                         force_model=model)
 
     def repair(self, problem, current_code, failure_info,
                screenshots=None, patch_history=None, force_model=None):

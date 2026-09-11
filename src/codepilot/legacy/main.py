@@ -728,7 +728,7 @@ class CodePilot:
         current_screen_text = None
         try:
             current_screen_text = self.agent.extract_screen_info(image, mime)
-        except GeminiWebError as exc:
+        except Exception as exc:
             print(f"  [WARN] Extraction failed: {exc}")
 
         if not current_screen_text or not current_screen_text.strip():
@@ -790,8 +790,10 @@ class CodePilot:
                 patch_history=self.patch_history,
                 force_model=model
             )
-        except GeminiWebError as exc:
+        except Exception as exc:
+            import traceback
             print(f"\n[GEMINI ERROR] {exc}")
+            traceback.print_exc()
             print("Press 0 to retry.")
             return
 
