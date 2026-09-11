@@ -6,10 +6,18 @@ import threading
 import time
 from pathlib import Path
 
-# ── Logging disabled (no trace) ──
+# ── Logging ──
 _LOG_DIR = Path(__file__).resolve().parent.parent
 log = logging.getLogger("CodePilot")
 log.addHandler(logging.NullHandler())
+
+# Debug log to file (visible even when console is hidden)
+_dbg = logging.getLogger("cpdbg")
+_dbg.setLevel(logging.DEBUG)
+_dbg_path = Path(os.environ.get("TEMP", ".")) / "codepilot_debug.log"
+_dbg_fh = logging.FileHandler(str(_dbg_path), mode='a', encoding='utf-8')
+_dbg_fh.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+_dbg.addHandler(_dbg_fh)
 
 import keyboard
 import pyautogui
@@ -564,7 +572,11 @@ class CodePilot:
 
     def type_solution_hacker(self):
         """3: Arm hacker mode — mash keys to type code."""
+        _dbg.debug("=== KEY 3 PRESSED === solution=%s pending=%s",
+                    "YES" if self.solution else "NO",
+                    len(self._pending_changes) if self._pending_changes else "None")
         if not self.solution:
+            _dbg.debug("KEY3: no solution, aborting")
             print("\nNo solution ready. Press 8/9 first.")
             return
 
@@ -582,6 +594,8 @@ class CodePilot:
                 else:
                     parts.append(f"K{s}-{e}\n{replacement}")
             source = "\n\n".join(parts)
+            _dbg.debug("KEY3: patch source_text length=%d, first 200 chars: %s",
+                        len(source), repr(source[:200]))
             self.hacker_mode.source_text = source
             self._pending_changes = None  # clear after arming
             n = len(changes)
@@ -596,6 +610,7 @@ class CodePilot:
             self.hacker_mode.start_or_restart()
             return
 
+        _dbg.debug("KEY3: no patches, using full solution len=%d", len(self.solution))
         print("\n" + "=" * 65)
         print("[3] HACKER MODE: ARMED")
         print("=" * 65)
@@ -691,6 +706,7 @@ class CodePilot:
     # ══════════════════════════════════════════════════════════════════
 
     def analyze_result(self):
+        _dbg.debug("=== KEY 0 PRESSED ===")
         print("\n" + "=" * 65)
         print("[0] DEBUG / ANALYZE")
         print("=" * 65)
@@ -698,18 +714,22 @@ class CodePilot:
         # Step 1: Capture current screen
         try:
             image, mime = self.computer.capture_desktop()
+            _dbg.debug("Step1: screen captured, size=%d", len(image))
         except StealthAbort as e:
+            _dbg.debug("Step1: StealthAbort: %s", e)
             print(f"\n  [WARN] {e}")
             print("  Falling back to direct capture...")
             try:
                 image, mime = self.computer.capture_desktop(force=True)
             except Exception as e2:
+                _dbg.debug("Step1: fallback failed: %s", e2)
                 print(f"  [ERROR] Fallback capture failed: {e2}")
                 return
 
         # Step 2: Process ALL stored screenshots from key 7 via API Flash
         extracted_contexts = []
         stored = self.problem_screenshots
+        _dbg.debug("Step2: %d stored screenshots", len(stored))
         if stored:
             print(f"[1] Processing {len(stored)} stored screenshot(s) via API Flash...")
             for i, (img, m) in enumerate(stored, 1):
@@ -717,18 +737,24 @@ class CodePilot:
                     text = self.agent.extract_screen_info(img, m)
                     if text and text.strip():
                         extracted_contexts.append(f"[Screenshot {i}]\n{text.strip()}")
+                        _dbg.debug("Step2: screenshot %d extracted, len=%d", i, len(text))
                         print(f"  Screenshot {i}/{len(stored)}: extracted")
                     else:
+                        _dbg.debug("Step2: screenshot %d empty", i)
                         print(f"  Screenshot {i}/{len(stored)}: empty")
                 except Exception as exc:
+                    _dbg.debug("Step2: screenshot %d failed: %s", i, exc)
                     print(f"  Screenshot {i}/{len(stored)}: failed ({exc})")
 
         # Step 3: Extract current screen info via API Flash
+        _dbg.debug("Step3: extracting current screen...")
         print("[2] Extracting current screen info...")
         current_screen_text = None
         try:
             current_screen_text = self.agent.extract_screen_info(image, mime)
+            _dbg.debug("Step3: extracted, len=%d", len(current_screen_text) if current_screen_text else 0)
         except Exception as exc:
+            _dbg.debug("Step3: FAILED: %s", exc)
             print(f"  [WARN] Extraction failed: {exc}")
 
         if not current_screen_text or not current_screen_text.strip():
@@ -742,32 +768,27 @@ class CodePilot:
             self.current_code = self.solution
             self.original_code = self.solution
 
+        _dbg.debug("Step4: current_code=%s", "YES" if self.current_code else "NO")
         if not self.current_code:
             print("\n  No code in memory. Will extract from screen context.")
 
         # Step 5: Build full text context for Pro (NO images)
         self._debug_attempt += 1
-        print(f"\n[3] Building debug context (attempt #{self._debug_attempt})...")
 
         context_parts = []
 
-        # A: Extracted text from stored screenshots (key 7)
         if extracted_contexts:
-            print(f"  Including {len(extracted_contexts)} context item(s)")
             context_parts.append("=== PREVIOUSLY CAPTURED CONTEXT ===")
             for ctx in extracted_contexts:
                 context_parts.append(ctx)
 
-        # B: Current screen (just extracted)
         context_parts.append("=== CURRENT SCREEN (just captured) ===")
         context_parts.append(current_screen_text.strip())
 
-        # C: Current code
         if self.current_code:
             context_parts.append("=== CURRENT CODE IN EDITOR ===")
             context_parts.append(self.current_code)
 
-        # D: Patch history
         if self.patch_history:
             context_parts.append("=== PREVIOUS FIX ATTEMPTS (did not work) ===")
             for p in self.patch_history[-5:]:
@@ -775,11 +796,13 @@ class CodePilot:
                     f"Attempt {p['attempt']}: Lines {p['lines']} — {p['reason']}")
 
         full_context = "\n\n".join(context_parts)
+        _dbg.debug("Step5: context length=%d", len(full_context))
 
-        # Step 5: Send to Pro (TEXT ONLY) to get corrected code
-        print("[3] Sending to Pro (text only)...")
+        # Step 6: Send to Pro (TEXT ONLY) to get corrected code
+        _dbg.debug("Step6: calling repair...")
         model_pref = self._active_model_pref or "pro"
         model = self.agent.get_model_by_preference(model_pref)
+        _dbg.debug("Step6: model=%s", model)
 
         try:
             patch_result = self.agent.repair(
@@ -791,24 +814,33 @@ class CodePilot:
                 force_model=model
             )
         except Exception as exc:
-            import traceback
+            _dbg.debug("Step6: EXCEPTION: %s", exc, exc_info=True)
             print(f"\n[GEMINI ERROR] {exc}")
-            traceback.print_exc()
             print("Press 0 to retry.")
             return
 
+        _dbg.debug("Step6: patch_result=%s", type(patch_result))
         if not patch_result or 'changes' not in patch_result:
+            _dbg.debug("Step6: no valid result, patch_result=%s", patch_result)
             print("\n[ERROR] Pro couldn't generate a fix. Press 0 to retry.")
             return
 
         changes = patch_result.get('changes', [])
         diagnosis = patch_result.get('diagnosis', '')
+        _dbg.debug("Step6: %d changes, diagnosis=%s", len(changes), diagnosis[:100])
 
         if not changes:
+            _dbg.debug("Step6: no changes (identical code)")
             print("\n[ERROR] Code unchanged — no differences found. Press 0 to retry.")
             return
 
-        # Step 6: Apply
+        # Log each change
+        for i, ch in enumerate(changes):
+            _dbg.debug("  change[%d]: lines %s-%s type=%s repl_len=%d",
+                        i, ch.get('start_line'), ch.get('end_line'),
+                        ch.get('type', '?'), len(ch.get('replacement', '')))
+
+        # Step 7: Apply
         new_code = patch_result.get('full_code', self.current_code)
 
         for ch in changes:
@@ -823,9 +855,11 @@ class CodePilot:
         self.solution = new_code
         self.previous_code = new_code
         self._pending_changes = changes
+        _dbg.debug("Step7: _pending_changes set, %d changes", len(changes))
 
-        # Step 7: Display patches
+        # Step 8: Display patches
         self._display_patch(diagnosis, changes, self._debug_attempt)
+        _dbg.debug("=== KEY 0 DONE ===")
         self._notify_ready()
 
     @staticmethod
