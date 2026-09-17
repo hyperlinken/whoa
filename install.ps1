@@ -70,11 +70,12 @@ if (-not (Test-Path $vpy)) {
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
-# pip commands: use SilentlyContinue so proxy warnings don't crash the script
+# pip commands: short timeout so proxy issues don't hang forever
 $ErrorActionPreference = 'SilentlyContinue'
-& $vpy -m pip install --upgrade pip -q 2>&1 | Out-Null
-& $vpy -m pip install -r (Join-Path $dir "requirements.txt") -q 2>&1 | Out-Null
-& $vpy -m pip install -e $dir -q 2>&1 | Out-Null
+$pipArgs = "--timeout 30 --retries 2 --trusted-host pypi.org --trusted-host files.pythonhosted.org"
+& $vpy -m pip install --upgrade pip -q $pipArgs.Split(' ') 2>&1 | Out-Null
+& $vpy -m pip install -r (Join-Path $dir "requirements.txt") -q $pipArgs.Split(' ') 2>&1 | Out-Null
+& $vpy -m pip install -e $dir -q $pipArgs.Split(' ') 2>&1 | Out-Null
 $ErrorActionPreference = 'Stop'
 
 # 5. Config
