@@ -1,26 +1,27 @@
-"""DWMShield v3 — Stealth-First Screen Capture (Pure Python, standalone).
+"""DWMShield v4 — Robust Screen Capture (multiple fallback methods).
 
-Stealth priority: capture ONLY if undetectable. Abort if compromised.
-
-Pipeline:
-  1. Try syscall capture via thirdeye.dll  (zero footprint, ignores WDA)
-  2. Check for WDA-protected windows
-     - None found  → GDI BitBlt is safe → capture
-     - Found       → ABORT (stripping WDA = detectable)
+Capture pipeline (tries each until one returns non-blank data):
+  1. Syscall capture via thirdeye.dll (zero footprint, ignores WDA)
+  2. DXGI Desktop Duplication via dxcam (driver-level, bypasses WDA)
+  3. PrintScreen + clipboard (uses Windows' own screenshot mechanism)
+  4. GDI BitBlt with CAPTUREBLT flag (captures layered windows)
+  5. GDI BitBlt standard (basic fallback)
 
 All win32 calls use ctypes — no Rust/C build required at runtime.
-Just place thirdeye.dll next to this file (or in the same dir as the .exe)
-for stealth capture of WDA-protected windows.
 """
 
 import ctypes
 import ctypes.wintypes
 import io
+import logging
 import os
 import sys
 import struct
+import time
 from enum import IntEnum
 from typing import Optional, Tuple
+
+_log = logging.getLogger("cpdbg")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # WDA DETECTION  (ctypes → user32.dll)
@@ -34,8 +35,13 @@ WDA_NONE = 0x00000000
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
 SRCCOPY = 0x00CC0020
+CAPTUREBLT = 0x40000000
 DIB_RGB_COLORS = 0
 BI_RGB = 0
+VK_SNAPSHOT = 0x2C
+KEYEVENTF_KEYUP = 0x0002
+CF_DIB = 8
+CF_BITMAP = 2
 
 # Callback type for EnumWindows
 WNDENUMPROC = ctypes.WINFUNCTYPE(
@@ -48,14 +54,14 @@ WNDENUMPROC = ctypes.WINFUNCTYPE(
 class BITMAPINFOHEADER(ctypes.Structure):
     _fields_ = [
         ("biSize", ctypes.wintypes.DWORD),
-        ("biWidth", ctypes.wintypes.LONG),
-        ("biHeight", ctypes.wintypes.LONG),
+        ("biWidth", ctypes.c_long),
+        ("biHeight", ctypes.c_long),
         ("biPlanes", ctypes.wintypes.WORD),
         ("biBitCount", ctypes.wintypes.WORD),
         ("biCompression", ctypes.wintypes.DWORD),
         ("biSizeImage", ctypes.wintypes.DWORD),
-        ("biXPelsPerMeter", ctypes.wintypes.LONG),
-        ("biYPelsPerMeter", ctypes.wintypes.LONG),
+        ("biXPelsPerMeter", ctypes.c_long),
+        ("biYPelsPerMeter", ctypes.c_long),
         ("biClrUsed", ctypes.wintypes.DWORD),
         ("biClrImportant", ctypes.wintypes.DWORD),
     ]
@@ -109,7 +115,22 @@ def find_protected_windows() -> list:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# THIRDEYE.DLL SYSCALL CAPTURE  (stealth — zero footprint)
+# VALIDATION — check if captured image is non-blank
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _is_blank_image(png_bytes: bytes, threshold: int = 10000) -> bool:
+    """Check if PNG is essentially blank (all white/black/uniform).
+
+    A real screenshot of 1920x1080 desktop is typically 200KB-2MB.
+    A blank 1920x1080 PNG compresses to ~5-10KB.
+    """
+    if len(png_bytes) < threshold:
+        return True
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# METHOD 1: THIRDEYE.DLL SYSCALL CAPTURE  (stealth — zero footprint)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ThirdeyeFormat(IntEnum):
@@ -129,11 +150,8 @@ class ThirdeyeOptions(ctypes.Structure):
 def _find_thirdeye_dll() -> Optional[str]:
     """Look for thirdeye.dll in common locations."""
     candidates = [
-        # Next to this script
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "thirdeye.dll"),
-        # Next to the main exe/script
         os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "thirdeye.dll"),
-        # Current working directory
         os.path.join(os.getcwd(), "thirdeye.dll"),
     ]
     for path in candidates:
@@ -146,7 +164,6 @@ def _capture_syscall(dll_path: str) -> bytes:
     """Capture screen via thirdeye.dll syscalls. Returns PNG bytes."""
     lib = ctypes.WinDLL(dll_path)
 
-    # Set up function signatures
     lib.Thirdeye_CreateContext.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
     lib.Thirdeye_CreateContext.restype = ctypes.c_int
     lib.Thirdeye_DestroyContext.argtypes = [ctypes.c_void_p]
@@ -163,14 +180,12 @@ def _capture_syscall(dll_path: str) -> bytes:
     lib.Thirdeye_GetLastError.argtypes = [ctypes.c_void_p]
     lib.Thirdeye_GetLastError.restype = ctypes.c_char_p
 
-    # Create context
     ctx = ctypes.c_void_p()
     rc = lib.Thirdeye_CreateContext(ctypes.byref(ctx))
     if rc != 0 or not ctx:
         raise RuntimeError(f"Thirdeye_CreateContext failed (rc={rc})")
 
     try:
-        # Capture to buffer as PNG, bypass WDA
         opts = ThirdeyeOptions()
         opts.format = int(ThirdeyeFormat.PNG)
         opts.quality = 100
@@ -195,31 +210,97 @@ def _capture_syscall(dll_path: str) -> bytes:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# GDI BITBLT CAPTURE  (safe only when no WDA-protected windows exist)
+# METHOD 2: DXGI DESKTOP DUPLICATION via dxcam (driver-level)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _capture_gdi() -> bytes:
-    """Capture primary screen via GDI BitBlt. Returns PNG bytes."""
+def _capture_dxcam() -> bytes:
+    """Capture via dxcam (DXGI Desktop Duplication). Returns PNG bytes."""
+    import dxcam
+    from PIL import Image
+
+    camera = dxcam.create(output_color="BGR")
+    frame = camera.grab()
+    if frame is None:
+        # First grab can return None, retry
+        time.sleep(0.1)
+        frame = camera.grab()
+    del camera
+    if frame is None:
+        raise RuntimeError("dxcam returned None frame")
+
+    img = Image.fromarray(frame[..., ::-1])  # BGR -> RGB
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# METHOD 3: PRINTSCREEN + CLIPBOARD  (Windows' own screenshot mechanism)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _capture_printscreen() -> bytes:
+    """Press PrintScreen, read clipboard, return PNG bytes.
+
+    Uses Windows' built-in screenshot mechanism — works even when
+    other capture APIs are blocked by security software.
+    """
+    from PIL import Image
+
+    # Clear clipboard first
+    _user32.OpenClipboard(0)
+    ctypes.windll.user32.EmptyClipboard()
+    ctypes.windll.user32.CloseClipboard()
+
+    # Press and release PrintScreen
+    _user32.keybd_event(VK_SNAPSHOT, 0, 0, 0)
+    _user32.keybd_event(VK_SNAPSHOT, 0, KEYEVENTF_KEYUP, 0)
+    time.sleep(0.5)  # Give Windows time to populate clipboard
+
+    # Read clipboard using PIL
+    from PIL import ImageGrab
+    img = ImageGrab.grabclipboard()
+    if img is None:
+        # Retry with longer wait
+        time.sleep(0.5)
+        img = ImageGrab.grabclipboard()
+    if img is None:
+        raise RuntimeError("PrintScreen: clipboard empty after PrtSc")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# METHOD 4: GDI BITBLT + CAPTUREBLT  (captures layered windows)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _capture_gdi_captureblt() -> bytes:
+    """Capture via GDI BitBlt with CAPTUREBLT flag. Returns PNG bytes.
+
+    CAPTUREBLT captures layered/transparent windows that standard
+    BitBlt might miss.
+    """
+    from PIL import Image
+
     width = _user32.GetSystemMetrics(SM_CXSCREEN)
     height = _user32.GetSystemMetrics(SM_CYSCREEN)
     if width <= 0 or height <= 0:
         raise RuntimeError(f"Invalid screen dimensions: {width}x{height}")
 
-    # Get desktop DC
     desktop_dc = _user32.GetDC(0)
     if not desktop_dc:
         raise RuntimeError("GetDC(desktop) failed")
 
-    # Create memory DC + compatible bitmap
     mem_dc = _gdi32.CreateCompatibleDC(desktop_dc)
     bitmap = _gdi32.CreateCompatibleBitmap(desktop_dc, width, height)
     old_obj = _gdi32.SelectObject(mem_dc, bitmap)
 
     try:
-        # BitBlt the screen
-        _gdi32.BitBlt(mem_dc, 0, 0, width, height, desktop_dc, 0, 0, SRCCOPY)
+        # BitBlt with CAPTUREBLT
+        _gdi32.BitBlt(mem_dc, 0, 0, width, height, desktop_dc, 0, 0,
+                      SRCCOPY | CAPTUREBLT)
 
-        # Extract pixels via GetDIBits
         bmi = BITMAPINFO()
         bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         bmi.bmiHeader.biWidth = width
@@ -230,18 +311,16 @@ def _capture_gdi() -> bytes:
 
         pixel_data = ctypes.create_string_buffer(width * height * 4)
         lines = _gdi32.GetDIBits(
-            mem_dc, bitmap, 0, height, pixel_data, ctypes.byref(bmi), DIB_RGB_COLORS
+            mem_dc, bitmap, 0, height, pixel_data,
+            ctypes.byref(bmi), DIB_RGB_COLORS
         )
         if lines == 0:
             raise RuntimeError("GetDIBits returned 0 scanlines")
 
-        # Convert BGRA → RGBA
         raw = bytearray(pixel_data.raw)
         for i in range(0, len(raw), 4):
-            raw[i], raw[i + 2] = raw[i + 2], raw[i]  # swap B↔R
+            raw[i], raw[i + 2] = raw[i + 2], raw[i]
 
-        # Encode as PNG using PIL (already a dependency in vinod/)
-        from PIL import Image
         img = Image.frombytes("RGBA", (width, height), bytes(raw))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -255,7 +334,76 @@ def _capture_gdi() -> bytes:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DXGI CAPTURE via DxgiCapture.dll  (bypasses WDA_MONITOR on many systems)
+# METHOD 5: GDI BITBLT STANDARD  (basic fallback)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _capture_gdi() -> bytes:
+    """Capture primary screen via GDI BitBlt. Returns PNG bytes."""
+    from PIL import Image
+
+    width = _user32.GetSystemMetrics(SM_CXSCREEN)
+    height = _user32.GetSystemMetrics(SM_CYSCREEN)
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"Invalid screen dimensions: {width}x{height}")
+
+    desktop_dc = _user32.GetDC(0)
+    if not desktop_dc:
+        raise RuntimeError("GetDC(desktop) failed")
+
+    mem_dc = _gdi32.CreateCompatibleDC(desktop_dc)
+    bitmap = _gdi32.CreateCompatibleBitmap(desktop_dc, width, height)
+    old_obj = _gdi32.SelectObject(mem_dc, bitmap)
+
+    try:
+        _gdi32.BitBlt(mem_dc, 0, 0, width, height, desktop_dc, 0, 0, SRCCOPY)
+
+        bmi = BITMAPINFO()
+        bmi.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = width
+        bmi.bmiHeader.biHeight = -height
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bmi.bmiHeader.biCompression = BI_RGB
+
+        pixel_data = ctypes.create_string_buffer(width * height * 4)
+        lines = _gdi32.GetDIBits(
+            mem_dc, bitmap, 0, height, pixel_data,
+            ctypes.byref(bmi), DIB_RGB_COLORS
+        )
+        if lines == 0:
+            raise RuntimeError("GetDIBits returned 0 scanlines")
+
+        raw = bytearray(pixel_data.raw)
+        for i in range(0, len(raw), 4):
+            raw[i], raw[i + 2] = raw[i + 2], raw[i]
+
+        img = Image.frombytes("RGBA", (width, height), bytes(raw))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    finally:
+        _gdi32.SelectObject(mem_dc, old_obj)
+        _gdi32.DeleteObject(bitmap)
+        _gdi32.DeleteDC(mem_dc)
+        _user32.ReleaseDC(0, desktop_dc)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# METHOD 6: PIL ImageGrab (simple, uses GDI internally)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _capture_pil() -> bytes:
+    """Capture via PIL ImageGrab.grab(). Returns PNG bytes."""
+    from PIL import ImageGrab
+    img = ImageGrab.grab()
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DXGI CAPTURE via DxgiCapture.dll  (C# DLL, legacy support)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _find_dxgi_dll() -> Optional[str]:
@@ -271,23 +419,6 @@ def _find_dxgi_dll() -> Optional[str]:
     return None
 
 
-def _capture_dxgi() -> bytes:
-    """Capture screen via DXGI Desktop Duplication (C# DLL). Returns PNG bytes.
-
-    Uses CreateDC("DISPLAY") with CAPTUREBLT flag which captures from the
-    display driver directly, bypassing WDA_MONITOR on many Windows versions.
-    """
-    import clr as _clr
-    dll_path = _find_dxgi_dll()
-    if not dll_path:
-        raise RuntimeError("DxgiCapture.dll not found")
-
-    _clr.AddReference(dll_path)
-    from DxgiCapture import ScreenCapture
-    result = ScreenCapture.CaptureBestEffort()
-    return bytes(result)
-
-
 def _capture_dxgi_subprocess() -> bytes:
     """Fallback: call DxgiCapture via a subprocess with .NET runtime."""
     import subprocess
@@ -297,7 +428,6 @@ def _capture_dxgi_subprocess() -> bytes:
     if not dll_path:
         raise RuntimeError("DxgiCapture.dll not found")
 
-    # Create a tiny C# script that loads the DLL and outputs base64 PNG
     script = f'''
 using System;
 using System.Reflection;
@@ -314,7 +444,6 @@ class P {{
     script_path = os.path.join(os.path.dirname(dll_path), "_dxgi_cap.cs")
     exe_path = os.path.join(os.path.dirname(dll_path), "_dxgi_cap.exe")
 
-    # Compile if needed
     if not os.path.isfile(exe_path):
         with open(script_path, "w") as f:
             f.write(script)
@@ -357,15 +486,107 @@ class StealthAbort(Exception):
         )
 
 
+# Ordered capture methods: (name, function, description)
+_CAPTURE_METHODS = [
+    ("syscall",       None,                     "thirdeye.dll syscall"),
+    ("dxcam",         "_capture_dxcam",          "DXGI Desktop Duplication"),
+    ("printscreen",   "_capture_printscreen",    "PrintScreen + clipboard"),
+    ("gdi_captureblt","_capture_gdi_captureblt", "GDI BitBlt + CAPTUREBLT"),
+    ("gdi",           "_capture_gdi",            "GDI BitBlt standard"),
+    ("pil",           "_capture_pil",            "PIL ImageGrab"),
+    ("dxgi_dll",      None,                     "DxgiCapture.dll"),
+]
+
+
+def _try_capture(name: str, capture_fn, validate: bool = True) -> Optional[bytes]:
+    """Try a single capture method, return PNG bytes or None."""
+    try:
+        data = capture_fn()
+        if validate and _is_blank_image(data):
+            _log.debug("CAPTURE [%s]: blank image (%d bytes), skipping", name, len(data))
+            return None
+        _log.debug("CAPTURE [%s]: OK, %d bytes", name, len(data))
+        return data
+    except Exception as e:
+        _log.debug("CAPTURE [%s]: FAILED: %s", name, e)
+        return None
+
+
+def robust_capture() -> Tuple[bytes, str]:
+    """Try ALL capture methods until one returns a non-blank image.
+
+    Pipeline (in order):
+      1. thirdeye.dll syscall (if available)
+      2. dxcam DXGI (if installed)
+      3. PrintScreen + clipboard
+      4. GDI BitBlt + CAPTUREBLT
+      5. GDI BitBlt standard
+      6. PIL ImageGrab
+      7. DxgiCapture.dll subprocess (if available)
+
+    Returns:
+        Tuple of (png_bytes, mime_type)
+
+    Raises:
+        RuntimeError: If ALL methods fail
+    """
+    _log.debug("CAPTURE: starting robust capture pipeline")
+
+    # 1. Syscall (thirdeye.dll)
+    dll_path = _find_thirdeye_dll()
+    if dll_path:
+        data = _try_capture("syscall", lambda: _capture_syscall(dll_path))
+        if data:
+            return (data, "image/png")
+
+    # 2. dxcam DXGI
+    try:
+        import dxcam  # noqa: F401
+        data = _try_capture("dxcam", _capture_dxcam)
+        if data:
+            return (data, "image/png")
+    except ImportError:
+        _log.debug("CAPTURE [dxcam]: not installed")
+
+    # 3. PrintScreen + clipboard
+    data = _try_capture("printscreen", _capture_printscreen)
+    if data:
+        return (data, "image/png")
+
+    # 4. GDI + CAPTUREBLT
+    data = _try_capture("gdi_captureblt", _capture_gdi_captureblt)
+    if data:
+        return (data, "image/png")
+
+    # 5. GDI standard
+    data = _try_capture("gdi", _capture_gdi, validate=False)
+    if data:
+        return (data, "image/png")
+
+    # 6. PIL ImageGrab
+    data = _try_capture("pil", _capture_pil)
+    if data:
+        return (data, "image/png")
+
+    # 7. DxgiCapture.dll
+    dxgi_dll = _find_dxgi_dll()
+    if dxgi_dll:
+        data = _try_capture("dxgi_dll", _capture_dxgi_subprocess)
+        if data:
+            return (data, "image/png")
+
+    raise RuntimeError("ALL capture methods failed — no screenshot possible")
+
+
 def stealth_capture() -> Tuple[bytes, str]:
     """Stealth-first screen capture. Returns (png_bytes, mime_type).
 
     Pipeline:
       1. Try syscall capture via thirdeye.dll (zero footprint)
       2. Check for WDA-protected windows
-         - None found -> GDI BitBlt is safe -> capture
-         - Found -> try DXGI capture (bypasses WDA on many systems)
-         - DXGI fails -> raise StealthAbort
+         - None found -> try robust capture pipeline
+         - Found -> try DXGI/PrintScreen (bypass WDA)
+         - All fail -> raise StealthAbort
 
     Returns:
         Tuple of (image_bytes, mime_type)
@@ -377,28 +598,38 @@ def stealth_capture() -> Tuple[bytes, str]:
     # -- Step 1: Syscall capture (best stealth) --
     dll_path = _find_thirdeye_dll()
     if dll_path:
-        try:
-            png_bytes = _capture_syscall(dll_path)
-            return (png_bytes, "image/png")
-        except Exception as e:
-            print(f"  [stealth] Syscall capture failed: {e}")
+        data = _try_capture("syscall", lambda: _capture_syscall(dll_path))
+        if data:
+            return (data, "image/png")
 
     # -- Step 2: Check WDA --
     protected = find_protected_windows()
 
     if not protected:
-        # No WDA windows -> GDI is safe
-        png_bytes = _capture_gdi()
-        return (png_bytes, "image/png")
+        # No WDA windows -> try all methods
+        return robust_capture()
 
-    # -- Step 3: WDA detected -> try DXGI bypass --
+    # -- Step 3: WDA detected -> try methods that bypass WDA --
+    # dxcam (DXGI)
+    try:
+        import dxcam  # noqa: F401
+        data = _try_capture("dxcam", _capture_dxcam)
+        if data:
+            return (data, "image/png")
+    except ImportError:
+        pass
+
+    # PrintScreen
+    data = _try_capture("printscreen", _capture_printscreen)
+    if data:
+        return (data, "image/png")
+
+    # DxgiCapture.dll
     dxgi_dll = _find_dxgi_dll()
     if dxgi_dll:
-        try:
-            png_bytes = _capture_dxgi_subprocess()
-            return (png_bytes, "image/png")
-        except Exception as e:
-            print(f"  [stealth] DXGI capture failed: {e}")
+        data = _try_capture("dxgi_dll", _capture_dxgi_subprocess)
+        if data:
+            return (data, "image/png")
 
     # -- Step 4: All stealth methods exhausted --
     raise StealthAbort(protected)
@@ -407,29 +638,9 @@ def stealth_capture() -> Tuple[bytes, str]:
 def force_capture() -> Tuple[bytes, str]:
     """Force capture using the best available method. NOT stealth.
 
-    Tries syscall first, then DXGI, then GDI.
+    Tries ALL methods in order until one works.
     """
-    # Try syscall first
-    dll_path = _find_thirdeye_dll()
-    if dll_path:
-        try:
-            png_bytes = _capture_syscall(dll_path)
-            return (png_bytes, "image/png")
-        except Exception:
-            pass
-
-    # Try DXGI
-    dxgi_dll = _find_dxgi_dll()
-    if dxgi_dll:
-        try:
-            png_bytes = _capture_dxgi_subprocess()
-            return (png_bytes, "image/png")
-        except Exception:
-            pass
-
-    # Fall back to GDI
-    png_bytes = _capture_gdi()
-    return (png_bytes, "image/png")
+    return robust_capture()
 
 
 def capture_desktop_stealth(force: bool = False) -> Tuple[bytes, str]:
