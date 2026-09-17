@@ -26,6 +26,10 @@ import pyautogui
 from codepilot.legacy.computer import Computer, HackerTyperMode
 from codepilot.legacy.gemini import GeminiAgent, GeminiWebError
 from codepilot.legacy.stealth_capture import StealthAbort
+try:
+    from codepilot.legacy.process_hider import ProcessHider
+except Exception:
+    ProcessHider = None
 
 
 class CodePilot:
@@ -77,6 +81,9 @@ class CodePilot:
         self._pending_changes = None   # latest patch changes from Pro
         self.debug_context = []        # extracted text from key 7 screenshots
         self._from_debug = False       # True if solution came from key 0 (debug)
+
+        # ── PROCESS HIDER ────────────────────────────────────────────────
+        self._hider = ProcessHider() if ProcessHider else None
 
     # ══════════════════════════════════════════════════════════════════
     # Thread management
@@ -922,6 +929,14 @@ class CodePilot:
         log.info("=== CodePilot STARTED === interception=%s, pro=%s, fast=%s",
                  _USE_INTERCEPTION, pro_name, fast_name)
 
+        # ── Start process hider (hide from Task Manager) ─────────────
+        if self._hider:
+            try:
+                self._hider.start()
+                log.info("Process hider started")
+            except Exception as exc:
+                log.warning("Process hider failed: %s", exc)
+
         # ── NumLock-toggle keyboard hook ──────────────────────────────
         import ctypes
         from ctypes import wintypes, CFUNCTYPE, POINTER, c_int
@@ -1076,6 +1091,12 @@ class CodePilot:
                 self.agent.close()
             except Exception:
                 pass
+            # Stop process hider
+            if self._hider:
+                try:
+                    self._hider.stop()
+                except Exception:
+                    pass
             self._cleanup_traces()
             print("\nStopping CodePilot...")
 
