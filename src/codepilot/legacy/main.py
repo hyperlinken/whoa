@@ -175,6 +175,24 @@ class CodePilot:
         print("Start fresh: press 7 to capture screenshots.")
 
     # ══════════════════════════════════════════════════════════════════
+    # Debug screenshot saving
+    # ══════════════════════════════════════════════════════════════════
+
+    def _save_debug_screenshot(self, image_bytes, mime, label="capture"):
+        """Save screenshot to disk for debugging."""
+        try:
+            import datetime
+            ss_dir = Path(os.environ.get("TEMP", ".")) / "codepilot_screenshots"
+            ss_dir.mkdir(exist_ok=True)
+            ext = "png" if "png" in mime else "jpg"
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname = ss_dir / f"{ts}_{label}.{ext}"
+            fname.write_bytes(image_bytes)
+            _dbg.debug("Screenshot saved: %s (%d bytes)", fname, len(image_bytes))
+        except Exception as exc:
+            _dbg.debug("Screenshot save failed: %s", exc)
+
+    # ══════════════════════════════════════════════════════════════════
     # 7: CAPTURE SCREENSHOT
     # ══════════════════════════════════════════════════════════════════
 
@@ -197,6 +215,10 @@ class CodePilot:
 
         self.problem_screenshots.append((image, mime))
         n = len(self.problem_screenshots)
+
+        # Save screenshot to disk for debugging
+        self._save_debug_screenshot(image, mime, f"key7_{n}")
+
         print(f"  -> Captured! Total stored: {n}")
         print("  7 = more | 0 = debug | 8 = Solve (Pro) | 9 = Solve (Fast)")
 
@@ -243,12 +265,14 @@ class CodePilot:
                 try:
                     image, mime = self.computer.capture_desktop()
                     self.problem_screenshots.append((image, mime))
+                    self._save_debug_screenshot(image, mime, "solve_auto")
                 except StealthAbort as e:
                     print(f"\n  [WARN] {e}")
                     print("  Falling back to direct capture...")
                     try:
                         image, mime = self.computer.capture_desktop(force=True)
                         self.problem_screenshots.append((image, mime))
+                        self._save_debug_screenshot(image, mime, "solve_fallback")
                     except Exception as e2:
                         print(f"  [ERROR] Fallback capture failed: {e2}")
                         return
@@ -719,10 +743,12 @@ class CodePilot:
         try:
             image, mime = self.computer.capture_desktop()
             _dbg.debug("Step1: captured, size=%d", len(image))
+            self._save_debug_screenshot(image, mime, "key0_current")
         except StealthAbort as e:
             _dbg.debug("Step1: StealthAbort: %s", e)
             try:
                 image, mime = self.computer.capture_desktop(force=True)
+                self._save_debug_screenshot(image, mime, "key0_fallback")
             except Exception as e2:
                 _dbg.debug("Step1: fallback failed: %s", e2)
                 return
